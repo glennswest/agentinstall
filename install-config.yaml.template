@@ -1,0 +1,38 @@
+apiVersion: v1
+baseDomain: gw.lo
+compute:
+- architecture: amd64
+  hyperthreading: Enabled
+  name: worker
+  replicas: 3
+controlPlane:
+  architecture: amd64
+  hyperthreading: Enabled
+  name: master
+  replicas: 3
+metadata:
+  name: gw
+networking:
+  clusterNetwork:
+  - cidr: 10.128.0.0/14
+    hostPrefix: 23
+  machineNetwork:
+  - cidr: 192.168.1.0/24
+  networkType: OVNKubernetes
+  serviceNetwork:
+  - 172.30.0.0/16
+platform:
+  none: {}
+pullSecret: 'PULL_SECRET_PLACEHOLDER'
+sshKey: 'SSH_KEY_PLACEHOLDER'
+imageContentSources:
+- mirrors:
+  - registry.gw.lo:8443/ocp4/openshift4
+  source: quay.io/openshift-release-dev/ocp-release
+- mirrors:
+  - registry.gw.lo:8443/ocp4/openshift4
+  source: quay.io/openshift-release-dev/ocp-v4.0-art-dev
+additionalTrustBundle: |
+  -----BEGIN CERTIFICATE-----
+  # Add your registry CA certificate here if using self-signed certs
+  -----END CERTIFICATE-----

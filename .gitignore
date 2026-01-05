@@ -1,0 +1,20 @@
+# Sensitive configuration files
+install-config.yaml
+pullsecret.json
+pull-secret*.txt
+.accesstoken
+
+# Generated installation artifacts
+gw/
+*.iso
+
+# Kubeconfig
+kubeconfig
+
+# macOS
+.DS_Store
+
+# Editor
+*.swp
+*.swo
+*~
