@@ -239,3 +239,4 @@ If `openshift-install` isn't cached on registry, either:
 
 - **qpve**: Traditional (non-agent) OpenShift installation scripts
 - **quick-quay**: Quay registry setup and release mirroring
+- **pdnsloadbalancer**: PowerDNS-based load balancer for API/ingress endpoints ([GitHub](https://github.com/glennswest/pdnsloadbalancer))
