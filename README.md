@@ -68,7 +68,7 @@ This mirrors to `registry.gw.lo` and caches:
 
 Creates VMs 701-706 with:
 - Same names as qpve (control0.gw.lo, worker0.gw.lo, etc.)
-- production-lvm storage (60G thick provisioned)
+- production-lvm storage (100G thick provisioned)
 - ISO boot enabled
 
 ### 3. Configure install-config.yaml
@@ -90,13 +90,12 @@ Edit `install-config.yaml` if needed. Key settings:
 
 1. **Pull openshift-install** - Downloads from registry cache or extracts from release
 2. **Prepare configs** - Copies install-config.yaml and agent-config.yaml
-3. **Create agent ISO** - Generated on registry server (fast), falls back to local
+3. **Create agent ISO** - Generated on registry server (fast), falls back to local. VM disk wipe runs in parallel.
 4. **Setup kubeconfig** - Installs to ~/.kube/config
-5. **Prepare VMs** - Power off and erase disks
-6. **Start control plane** - Powers on control nodes
-7. **Start workers** - Powers on worker nodes (after 120s delay)
-8. **Wait for bootstrap** - Monitors bootstrap completion
-9. **Wait for install** - Monitors full installation
+5. **Start all nodes** - Powers on all control and worker nodes
+6. **Launch monitor** - Starts GUI monitor (monitor.py) in background
+7. **Wait for bootstrap** - Monitors bootstrap completion
+8. **Wait for install** - Monitors full installation
 
 ## Performance Optimizations
 
@@ -130,6 +129,7 @@ The base RHCOS ISO is cached during mirror:
 | Script | Description |
 |--------|-------------|
 | `install.sh` | Main installation script |
+| `monitor.py` | GUI monitor for agent installation (auto-started) |
 | `create-vms.sh` | Create VM infrastructure |
 | `delete-vms.sh` | Delete all cluster VMs |
 | `poweroff-all.sh` | Power off all cluster VMs |
@@ -144,13 +144,14 @@ The base RHCOS ISO is cached during mirror:
 agentinstall/
 ├── config.sh                    # Environment configuration
 ├── install.sh                   # Main installation script
+├── monitor.py                   # GUI monitor for agent installation
 ├── pull-from-registry.sh        # Extract installer from registry
 ├── create-vms.sh                # Create VM infrastructure
 ├── delete-vms.sh                # Delete VMs
 ├── poweroff-all.sh              # Power off all VMs
 ├── poweron-all.sh               # Power on all VMs
 ├── approvecsr.sh                # CSR approval helper
-├── watch-install.sh             # Installation monitor
+├── watch-install.sh             # Installation monitor (CLI)
 ├── agent-config.yaml            # Agent configuration
 ├── install-config.yaml          # Install configuration
 ├── install-config.yaml.template # Template for install-config
@@ -175,7 +176,7 @@ agentinstall/
 | `PVE_HOST` | pve.gw.lo | Proxmox host |
 | `LVM_VG` | production-lvm | LVM volume group |
 | `LVM_STORAGE` | production-lvm | Proxmox storage ID |
-| `DEFAULT_DISK_SIZE` | 60G | VM disk size |
+| `DEFAULT_DISK_SIZE` | 100G | VM disk size (OCP 4.18+ requires 100GB) |
 | `CONTROL_VM_IDS` | (701 702 703) | Control plane VM IDs |
 | `WORKER_VM_IDS` | (704 705 706) | Worker VM IDs |
 | `CONTROL_CORES` | 8 | Control plane CPU cores |
@@ -201,12 +202,12 @@ agentinstall/
 
 ### "No eligible disks" Error
 
-VMs need empty disks. The install script erases disks, but if it fails:
+VMs need empty disks of at least 100GB (OCP 4.18+ requirement). The install script erases disks, but if it fails:
 
 ```bash
 # Manually erase via Proxmox
 ssh root@pve.gw.lo "lvremove -f production-lvm/vm-701-disk-0"
-ssh root@pve.gw.lo "lvcreate --yes --wipesignatures y -L60G -n vm-701-disk-0 production-lvm"
+ssh root@pve.gw.lo "lvcreate --yes --wipesignatures y -L100G -n vm-701-disk-0 production-lvm"
 ```
 
 ### DNS Resolution Errors

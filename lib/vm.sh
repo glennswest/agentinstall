@@ -8,8 +8,14 @@ source "${VM_LIB_DIR}/../config.sh"
 # Get VM ID by name or return the ID if already numeric
 get_vmid() {
     local input="$1"
+    # If input is numeric, just return it directly
+    if [[ "$input" =~ ^[0-9]+$ ]]; then
+        echo "$input"
+        return
+    fi
+    # Otherwise lookup by name
     local vmid
-    vmid=$(ssh "${PVE_USER}@${PVE_HOST}" "qm list | grep '$input' | awk '{print \$1}'" 2>/dev/null)
+    vmid=$(ssh "${PVE_USER}@${PVE_HOST}" "qm list | grep -w '$input' | awk '{print \$1}'" 2>/dev/null)
     if [ -z "${vmid}" ]; then
         vmid="$input"
     fi
@@ -58,27 +64,17 @@ create_lvm() {
     ssh "${PVE_USER}@${PVE_HOST}" "lvcreate --yes --wipesignatures y -L${size} -n ${lvmname} ${LVM_VG}"
 }
 
-# Erase disk for VM (reinitialize)
+# Erase disk for VM (wipe first 100MB to clear partitions/signatures)
 erase_disk() {
     local vmid
     vmid=$(get_vmid "$1")
-    local disktype
-    disktype=$(get_disktype "$vmid")
+    local lvmname="vm-${vmid}-disk-0"
+    local drivepath="/dev/${LVM_VG}/${lvmname}"
 
-    case "$disktype" in
-        lvm)
-            echo "Erasing LVM disk for VM ${vmid}..."
-            create_lvm "$vmid" "$DEFAULT_DISK_SIZE"
-            ;;
-        qcow)
-            echo "Erasing qcow disk for VM ${vmid}..."
-            # Add qcow handling if needed
-            ;;
-        *)
-            echo "ERROR: Unknown disk type for VM ${vmid}"
-            return 1
-            ;;
-    esac
+    echo "Wiping disk for VM ${vmid}..."
+    # Use -b to verify it's a block device before wiping
+    ssh "${PVE_USER}@${PVE_HOST}" "test -b ${drivepath} && dd if=/dev/zero of=${drivepath} bs=1M count=100 2>/dev/null || echo 'Warning: ${drivepath} not a block device'"
+    echo "Disk wiped: ${lvmname}"
 }
 
 # Create a VM with ISO boot
@@ -126,7 +122,7 @@ delete_vm() {
 upload_iso() {
     local iso_path="$1"
     echo "Uploading ISO to Proxmox (with compression)..."
-    scp -C "$iso_path" "${PVE_USER}@${PVE_HOST}:${ISO_PATH}/${ISO_NAME}"
+    scp -O -C "$iso_path" "${PVE_USER}@${PVE_HOST}:${ISO_PATH}/${ISO_NAME}"
     echo "ISO uploaded: ${ISO_PATH}/${ISO_NAME}"
 }
 
@@ -139,38 +135,42 @@ generate_iso_remote() {
     local registry_host="${LOCAL_REGISTRY%%:*}"
     local remote_dir="/tmp/agent-install-$$"
     local cache_dir="/var/lib/openshift-cache"
+    local SSH_OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR"
 
     echo "Generating agent ISO on registry server (faster)..."
 
     # Check if openshift-install is cached on registry
-    if ! ssh "root@${registry_host}" "test -x ${cache_dir}/openshift-install-${version}"; then
+    if ! ssh $SSH_OPTS "root@${registry_host}" "test -x ${cache_dir}/openshift-install-${version}"; then
         echo "ERROR: openshift-install-${version} not cached on registry"
         echo "Run mirror first, or fall back to local generation"
         return 1
     fi
 
     # Create remote working directory
-    ssh "root@${registry_host}" "mkdir -p ${remote_dir}"
+    ssh $SSH_OPTS "root@${registry_host}" "mkdir -p ${remote_dir}"
 
     # Copy configs to registry (small files, fast)
-    scp -q "$install_config" "root@${registry_host}:${remote_dir}/install-config.yaml"
-    scp -q "$agent_config" "root@${registry_host}:${remote_dir}/agent-config.yaml"
+    # Use -O for legacy SCP protocol (SFTP not enabled on registry)
+    scp -O -q $SSH_OPTS "$install_config" "root@${registry_host}:${remote_dir}/install-config.yaml"
+    scp -O -q $SSH_OPTS "$agent_config" "root@${registry_host}:${remote_dir}/agent-config.yaml"
 
     # Generate ISO on registry server
     echo "Running openshift-install on registry server..."
-    ssh "root@${registry_host}" "cd ${remote_dir} && ${cache_dir}/openshift-install-${version} agent create image"
+    ssh $SSH_OPTS "root@${registry_host}" "cd ${remote_dir} && ${cache_dir}/openshift-install-${version} agent create image"
 
-    # Copy ISO directly to Proxmox (local network, very fast)
-    echo "Copying ISO to Proxmox (local transfer)..."
-    ssh "root@${registry_host}" "scp -o StrictHostKeyChecking=no ${remote_dir}/agent.x86_64.iso ${PVE_USER}@${PVE_HOST}:${ISO_PATH}/${ISO_NAME}"
+    # Copy ISO directly to Proxmox (local network, fast)
+    echo "Copying ISO to Proxmox..."
+    ssh $SSH_OPTS "root@${registry_host}" "scp -O -o StrictHostKeyChecking=no ${remote_dir}/agent.x86_64.iso ${PVE_USER}@${PVE_HOST}:${ISO_PATH}/${ISO_NAME}"
 
-    # Copy kubeconfig back to local machine
-    echo "Retrieving kubeconfig..."
+    # Copy all generated files back to local machine (needed for wait-for commands)
+    echo "Retrieving generated assets..."
     mkdir -p "${SCRIPT_DIR}/gw/auth"
-    scp -q "root@${registry_host}:${remote_dir}/auth/kubeconfig" "${SCRIPT_DIR}/gw/auth/kubeconfig"
+    scp -O -q -r $SSH_OPTS "root@${registry_host}:${remote_dir}/auth/" "${SCRIPT_DIR}/gw/"
+    scp -O -q $SSH_OPTS "root@${registry_host}:${remote_dir}/.openshift_install_state.json" "${SCRIPT_DIR}/gw/"
+    scp -O -q $SSH_OPTS "root@${registry_host}:${remote_dir}/rendezvousIP" "${SCRIPT_DIR}/gw/" 2>/dev/null || true
 
     # Cleanup remote directory
-    ssh "root@${registry_host}" "rm -rf ${remote_dir}"
+    ssh $SSH_OPTS "root@${registry_host}" "rm -rf ${remote_dir}"
 
     echo "ISO generated and uploaded: ${ISO_PATH}/${ISO_NAME}"
     return 0

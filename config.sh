@@ -26,7 +26,7 @@ export ISO_NAME='coreos-x86_64.iso'
 # LVM settings (same as qpve - production-lvm, thick provisioned)
 export LVM_VG='production-lvm'
 export LVM_STORAGE='production-lvm'
-export DEFAULT_DISK_SIZE='60G'
+export DEFAULT_DISK_SIZE='100G'
 
 # Cluster settings
 export CLUSTER_NAME='gw'

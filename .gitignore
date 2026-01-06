@@ -20,3 +20,4 @@ kubeconfig
 *~
 .openshift-install-source
 bin/
+venv/
