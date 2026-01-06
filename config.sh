@@ -12,9 +12,9 @@ export RELEASE_NAME="ocp-release"
 export ARCHITECTURE='x86_64'
 
 # Registry credentials (loaded from .env file)
-export REGISTRY_USER='init'
 if [[ -f "${CONFIG_DIR}/.env" ]]; then
     source "${CONFIG_DIR}/.env"
+    export REGISTRY_USER
     export REGISTRY_PASSWORD
 else
     echo "Warning: .env file not found. Run ./generate-secrets.sh to create it." >&2
