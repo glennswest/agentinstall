@@ -2,18 +2,23 @@
 # Configuration for agent-based OpenShift installation
 # Uses local registry at registry.gw.lo
 
+# Paths (relative to config.sh location)
+CONFIG_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 # Registry settings
 export LOCAL_REGISTRY='registry.gw.lo'
 export LOCAL_REPOSITORY='openshift/release'
 export RELEASE_NAME="ocp-release"
 export ARCHITECTURE='x86_64'
 
-# Registry credentials (update these or use pull-secret file)
+# Registry credentials (loaded from .env file)
 export REGISTRY_USER='init'
-export REGISTRY_PASSWORD='REDACTED'
-
-# Paths (relative to config.sh location)
-CONFIG_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [[ -f "${CONFIG_DIR}/.env" ]]; then
+    source "${CONFIG_DIR}/.env"
+    export REGISTRY_PASSWORD
+else
+    echo "Warning: .env file not found. Run ./generate-secrets.sh to create it." >&2
+fi
 export PULL_SECRET_JSON="${CONFIG_DIR}/pullsecret.json"
 export KUBECONFIG_DIR="${HOME}/.kube"
 

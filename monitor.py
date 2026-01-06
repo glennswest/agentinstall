@@ -450,8 +450,13 @@ class AgentMonitor:
                     c.get("type") == "Progressing" and c.get("status") == "True"
                     for c in conditions
                 )
+                is_available = any(
+                    c.get("type") == "Available" and c.get("status") == "True"
+                    for c in conditions
+                )
 
-                if is_progressing:
+                # Only show if progressing AND not yet available
+                if is_progressing and not is_available:
                     # Control plane operators roll out to master nodes
                     if op_name in control_plane_ops:
                         for node in nodes:

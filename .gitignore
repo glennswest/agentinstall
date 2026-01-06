@@ -1,4 +1,5 @@
 # Sensitive configuration files
+.env
 install-config.yaml
 pullsecret.json
 pull-secret*.txt
