@@ -97,7 +97,7 @@ done
 # Start monitor GUI in background
 echo ""
 echo "Starting installation monitor..."
-python3 "${SCRIPT_DIR}/monitor.py" &
+"${SCRIPT_DIR}/venv/bin/python3" "${SCRIPT_DIR}/monitor.py" &
 MONITOR_PID=$!
 echo "Monitor PID: $MONITOR_PID"
 
