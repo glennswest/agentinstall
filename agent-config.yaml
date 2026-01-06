@@ -3,3 +3,34 @@ kind: AgentConfig
 metadata:
   name: gw
 rendezvousIP: 192.168.1.201
+hosts:
+  - hostname: control0.gw.lo
+    role: master
+    interfaces:
+      - name: enp6s18
+        macAddress: 00:50:56:1f:26:26
+  - hostname: control1.gw.lo
+    role: master
+    interfaces:
+      - name: enp6s18
+        macAddress: 00:50:56:1f:27:27
+  - hostname: control2.gw.lo
+    role: master
+    interfaces:
+      - name: enp6s18
+        macAddress: 00:50:56:1f:28:28
+  - hostname: worker0.gw.lo
+    role: worker
+    interfaces:
+      - name: enp6s18
+        macAddress: 00:50:56:1f:30:30
+  - hostname: worker1.gw.lo
+    role: worker
+    interfaces:
+      - name: enp6s18
+        macAddress: 00:50:56:1f:31:31
+  - hostname: worker2.gw.lo
+    role: worker
+    interfaces:
+      - name: enp6s18
+        macAddress: 00:50:56:1f:32:32

@@ -46,11 +46,22 @@ class AgentMonitor:
         cluster_frame = ttk.LabelFrame(self.root, text="Cluster Status", padding=10)
         cluster_frame.pack(fill=tk.X, padx=10, pady=5)
 
-        self.cluster_status = ttk.Label(cluster_frame, text="Loading...", font=("Helvetica", 14, "bold"))
-        self.cluster_status.pack(anchor=tk.W)
+        status_row = ttk.Frame(cluster_frame)
+        status_row.pack(anchor=tk.W)
+        ttk.Label(status_row, text="Status:", font=("Helvetica", 10)).pack(side=tk.LEFT)
+        self.cluster_status = ttk.Label(status_row, text="Loading...", font=("Helvetica", 24, "bold"))
+        self.cluster_status.pack(side=tk.LEFT, padx=(5, 0))
 
         self.cluster_info = ttk.Label(cluster_frame, text="", wraplength=850)
         self.cluster_info.pack(anchor=tk.W)
+
+        # Progress bar
+        progress_frame = ttk.Frame(cluster_frame)
+        progress_frame.pack(fill=tk.X, pady=(10, 0))
+        self.progress_bar = ttk.Progressbar(progress_frame, length=400, mode='determinate', maximum=100)
+        self.progress_bar.pack(side=tk.LEFT)
+        self.progress_label = ttk.Label(progress_frame, text="0%", font=("Helvetica", 12))
+        self.progress_label.pack(side=tk.LEFT, padx=(10, 0))
 
         # Hosts frame
         hosts_frame = ttk.LabelFrame(self.root, text="Hosts", padding=10)
@@ -87,10 +98,10 @@ class AgentMonitor:
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
 
         # Configure tags for coloring
-        self.details_text.tag_configure("success", foreground="green")
-        self.details_text.tag_configure("failure", foreground="red")
-        self.details_text.tag_configure("error", foreground="goldenrod")
-        self.details_text.tag_configure("pending", foreground="gray")
+        self.details_text.tag_configure("success", foreground="#2d7d2d")
+        self.details_text.tag_configure("failure", foreground="#a05050")
+        self.details_text.tag_configure("error", foreground="#8b7355")
+        self.details_text.tag_configure("pending", foreground="#777777")
 
         # Control buttons
         btn_frame = ttk.Frame(self.root)
@@ -132,13 +143,24 @@ class AgentMonitor:
                 self.cluster_id = cluster.get("id")
                 status = cluster.get("status", "unknown")
                 status_info = cluster.get("status_info", "")
+                progress = cluster.get("progress", {})
+                total_pct = progress.get("total_percentage", 0)
 
-                # Update cluster status
-                self.root.after(0, lambda: self.cluster_status.config(
-                    text=f"Status: {status.upper()}",
-                    foreground=self.status_color(status)
+                # Update cluster status with percentage
+                if total_pct > 0:
+                    status_text = f"{status.upper()} ({total_pct}%)"
+                else:
+                    status_text = status.upper()
+
+                self.root.after(0, lambda t=status_text, s=status: self.cluster_status.config(
+                    text=t,
+                    foreground=self.status_color(s)
                 ))
                 self.root.after(0, lambda: self.cluster_info.config(text=status_info))
+
+                # Update progress bar
+                self.root.after(0, lambda p=total_pct: self.progress_bar.config(value=p))
+                self.root.after(0, lambda p=total_pct: self.progress_label.config(text=f"{p}%"))
 
                 # Get hosts
                 hosts = self.get_hosts(self.cluster_id)
@@ -149,7 +171,7 @@ class AgentMonitor:
                 ))
             else:
                 self.root.after(0, lambda: self.cluster_status.config(
-                    text="Waiting on API...",
+                    text="WAITING...",
                     foreground="goldenrod"
                 ))
                 self.root.after(0, lambda: self.status_label.config(
@@ -164,16 +186,20 @@ class AgentMonitor:
 
     def status_color(self, status):
         colors = {
-            "ready": "green",
-            "installed": "green",
-            "installing": "blue",
-            "preparing-for-installation": "blue",
-            "pending-for-input": "goldenrod",
-            "insufficient": "red",
-            "error": "red",
-            "known": "green",
+            "ready": "#2d7d2d",
+            "installed": "#2d7d2d",
+            "done": "#2d7d2d",
+            "installing": "#4a6fa5",
+            "installing-in-progress": "#4a6fa5",
+            "preparing-for-installation": "#4a6fa5",
+            "preparing-successful": "#4a6fa5",
+            "pending-for-input": "#8b7355",
+            "insufficient": "#8b7355",
+            "rebooting": "#6b5b7a",
+            "error": "#a05050",
+            "known": "#2d7d2d",
         }
-        return colors.get(status, "black")
+        return colors.get(status, "#555555")
 
     def update_hosts(self, hosts):
         # Clear existing items
@@ -183,11 +209,35 @@ class AgentMonitor:
         # Store hosts data for detail view
         self.hosts_data = {}
 
-        for host in hosts:
+        # Sort by role (master first), then by hostname
+        def sort_key(h):
+            role = h.get("role", "worker")
+            hostname = h.get("requested_hostname") or ""
+            role_order = 0 if role == "master" else 1
+            return (role_order, hostname)
+
+        for host in sorted(hosts, key=sort_key):
             host_id = host.get("id")
-            hostname = host.get("requested_hostname", "unknown")
+            hostname = host.get("requested_hostname") or "unknown"
             role = host.get("role", "auto-assign")
             status = host.get("status", "unknown")
+            status_info = host.get("status_info", "")
+
+            # Try to get hostname from inventory if not set
+            try:
+                inventory = json.loads(host.get("inventory", "{}"))
+                if hostname == "unknown" and inventory.get("hostname"):
+                    hostname = inventory.get("hostname")
+                # Get IP if still unknown
+                if hostname == "unknown":
+                    ifaces = inventory.get("interfaces", [])
+                    for iface in ifaces:
+                        addrs = iface.get("ipv4_addresses", [])
+                        if addrs:
+                            hostname = addrs[0].split("/")[0]
+                            break
+            except:
+                pass
 
             # Get disk info from inventory
             disk_info = "N/A"
@@ -202,12 +252,19 @@ class AgentMonitor:
             except:
                 pass
 
-            # Get progress
+            # Show progress percentage and stage
             progress = host.get("progress", {})
+            pct = progress.get("installation_percentage", 0)
             stage = progress.get("current_stage", "")
+            if pct > 0:
+                progress_text = f"{pct}% - {stage}"
+            elif stage:
+                progress_text = stage
+            else:
+                progress_text = status_info[:40] + "..." if len(status_info) > 40 else status_info
 
             self.hosts_tree.insert("", tk.END, iid=host_id, values=(
-                hostname, role, status, disk_info, stage
+                hostname, role, status, disk_info, progress_text
             ))
 
             # Color by status
