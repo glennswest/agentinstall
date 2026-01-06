@@ -89,7 +89,7 @@ class AgentMonitor:
         # Configure tags for coloring
         self.details_text.tag_configure("success", foreground="green")
         self.details_text.tag_configure("failure", foreground="red")
-        self.details_text.tag_configure("error", foreground="orange")
+        self.details_text.tag_configure("error", foreground="goldenrod")
         self.details_text.tag_configure("pending", foreground="gray")
 
         # Control buttons
@@ -150,7 +150,7 @@ class AgentMonitor:
             else:
                 self.root.after(0, lambda: self.cluster_status.config(
                     text="Waiting on API...",
-                    foreground="orange"
+                    foreground="goldenrod"
                 ))
                 self.root.after(0, lambda: self.status_label.config(
                     text="Waiting on API..."
@@ -168,7 +168,7 @@ class AgentMonitor:
             "installed": "green",
             "installing": "blue",
             "preparing-for-installation": "blue",
-            "pending-for-input": "orange",
+            "pending-for-input": "goldenrod",
             "insufficient": "red",
             "error": "red",
             "known": "green",
