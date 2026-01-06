@@ -18,9 +18,6 @@ OCP_RELEASE="$1"
 
 echo "Extracting openshift-install ${OCP_RELEASE} from ${LOCAL_REGISTRY}..."
 
-# Login to local registry
-podman login -u "${REGISTRY_USER}" -p "${REGISTRY_PASSWORD}" "${LOCAL_REGISTRY}" --tls-verify=false
-
 # Extract openshift-install binary from release image
 oc adm release extract \
     --insecure=true \

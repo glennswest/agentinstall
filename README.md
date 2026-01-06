@@ -5,8 +5,8 @@ Agent-based OpenShift installer using local registry at `registry.gw.lo`.
 ## Prerequisites
 
 - Proxmox VE access (pve.gw.lo)
-- Local registry (registry.gw.lo:8443) with mirrored OCP images
-- `oc` and `podman` CLI tools installed
+- Local registry (registry.gw.lo) with mirrored OCP images
+- `oc` CLI tool installed
 - SSH access to Proxmox host
 - Pull secret file at `~/gw.lo/pull-secret-registry.txt`
 
@@ -27,7 +27,7 @@ Agent-based OpenShift installer using local registry at `registry.gw.lo`.
    ```
 
 3. **Update config.sh if needed:**
-   - VM IDs (default: 750-755, separate from qpve's 700-714)
+   - VM IDs (default: 701-706, same as qpve)
    - Registry credentials
    - Cluster settings
 
@@ -78,6 +78,6 @@ agentinstall/
 
 ## Notes
 
-- Uses VM IDs 750-755 to avoid conflicts with qpve (700-714)
-- All images pulled from registry.gw.lo:8443
+- Uses same VM IDs as qpve (701-706)
+- All images pulled from registry.gw.lo
 - Kubeconfig automatically installed to ~/.kube/config

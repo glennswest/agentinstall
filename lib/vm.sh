@@ -23,7 +23,7 @@ get_disktype() {
     conf=$(ssh "${PVE_USER}@${PVE_HOST}" "cat /etc/pve/qemu-server/${vmid}.conf 2>/dev/null")
     if echo "$conf" | grep -q "qcow"; then
         echo "qcow"
-    elif echo "$conf" | grep -q "test-lvm-thin"; then
+    elif echo "$conf" | grep -q "${LVM_STORAGE}"; then
         echo "lvm"
     else
         echo "none"
@@ -46,15 +46,16 @@ poweroff_vm() {
     ssh "${PVE_USER}@${PVE_HOST}" "qm stop ${vmid}" 2>/dev/null || true
 }
 
-# Create LVM disk for VM
+# Create LVM disk for VM (thick provisioned, same as qpve)
 create_lvm() {
     local vmid="$1"
     local size="${2:-$DEFAULT_DISK_SIZE}"
     local lvmname="vm-${vmid}-disk-0"
+    local drivepath="/dev/${LVM_VG}/${lvmname}"
 
     echo "Creating LVM disk ${lvmname} (${size})..."
-    ssh "${PVE_USER}@${PVE_HOST}" "lvremove -f ${LVM_POOL%/*}/${lvmname}" 2>/dev/null || true
-    ssh "${PVE_USER}@${PVE_HOST}" "lvcreate -V${size} -T ${LVM_POOL} -n ${lvmname}"
+    ssh "${PVE_USER}@${PVE_HOST}" "lvremove ${drivepath} -y 2>/dev/null || true"
+    ssh "${PVE_USER}@${PVE_HOST}" "lvcreate --yes --wipesignatures y -L${size} -n ${lvmname} ${LVM_VG}"
 }
 
 # Erase disk for VM (reinitialize)
@@ -109,7 +110,7 @@ create_vm_iso() {
         --ide2 local:iso/${ISO_NAME},media=cdrom \
         --bootdisk scsi0 \
         --scsihw virtio-scsi-single \
-        --scsi0 test-lvm-thin:${lvmname},size=${disksize},cache=unsafe,discard=on,iothread=1"
+        --scsi0 ${LVM_STORAGE}:${lvmname},size=${disksize}"
 }
 
 # Delete a VM
