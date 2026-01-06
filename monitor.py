@@ -10,11 +10,23 @@ import requests
 import json
 import threading
 import time
+import os
 
 # Configuration
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+STATE_FILE = os.path.join(SCRIPT_DIR, "gw", ".openshift_install_state.json")
 API_URL = "http://192.168.1.201:8090/api/assisted-install/v2"
-AUTH_TOKEN = "REDACTED"
 REFRESH_INTERVAL = 5000  # ms
+
+
+def get_auth_token():
+    """Read auth token from state file"""
+    try:
+        with open(STATE_FILE, 'r') as f:
+            state = json.load(f)
+            return state.get("*gencrypto.AuthConfig", {}).get("UserAuthToken", "")
+    except:
+        return ""
 
 
 class AgentMonitor:
@@ -92,7 +104,10 @@ class AgentMonitor:
 
     def api_request(self, endpoint):
         try:
-            headers = {"Authorization": AUTH_TOKEN}
+            token = get_auth_token()
+            if not token:
+                return None
+            headers = {"Authorization": token}
             response = requests.get(f"{API_URL}{endpoint}", headers=headers, timeout=5, verify=False)
             if response.status_code == 200:
                 return response.json()
