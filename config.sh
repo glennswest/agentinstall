@@ -4,7 +4,7 @@
 
 # Registry settings
 export LOCAL_REGISTRY='registry.gw.lo'
-export LOCAL_REPOSITORY='ocp4/openshift4'
+export LOCAL_REPOSITORY='openshift/release'
 export RELEASE_NAME="ocp-release"
 export ARCHITECTURE='x86_64'
 
@@ -12,9 +12,9 @@ export ARCHITECTURE='x86_64'
 export REGISTRY_USER='init'
 export REGISTRY_PASSWORD='REDACTED'
 
-# Paths (relative to script directory)
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-export PULL_SECRET_JSON="${SCRIPT_DIR}/pullsecret.json"
+# Paths (relative to config.sh location)
+CONFIG_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+export PULL_SECRET_JSON="${CONFIG_DIR}/pullsecret.json"
 export KUBECONFIG_DIR="${HOME}/.kube"
 
 # Proxmox settings

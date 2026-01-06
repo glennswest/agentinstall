@@ -2,8 +2,8 @@
 # VM management library functions
 # Source this file in other scripts
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-source "${SCRIPT_DIR}/../config.sh"
+VM_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${VM_LIB_DIR}/../config.sh"
 
 # Get VM ID by name or return the ID if already numeric
 get_vmid() {

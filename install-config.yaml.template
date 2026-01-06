@@ -27,10 +27,10 @@ pullSecret: 'PULL_SECRET_PLACEHOLDER'
 sshKey: 'SSH_KEY_PLACEHOLDER'
 imageContentSources:
 - mirrors:
-  - registry.gw.lo/ocp4/openshift4
+  - registry.gw.lo/openshift/release
   source: quay.io/openshift-release-dev/ocp-release
 - mirrors:
-  - registry.gw.lo/ocp4/openshift4
+  - registry.gw.lo/openshift/release
   source: quay.io/openshift-release-dev/ocp-v4.0-art-dev
 additionalTrustBundle: |
   -----BEGIN CERTIFICATE-----

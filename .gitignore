@@ -18,3 +18,5 @@ kubeconfig
 *.swp
 *.swo
 *~
+.openshift-install-source
+bin/
