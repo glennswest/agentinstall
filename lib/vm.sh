@@ -122,9 +122,56 @@ delete_vm() {
     ssh "${PVE_USER}@${PVE_HOST}" "qm destroy ${vmid}" 2>/dev/null || true
 }
 
-# Upload ISO to Proxmox
+# Upload ISO to Proxmox with compression (fallback if remote generation fails)
 upload_iso() {
     local iso_path="$1"
-    echo "Uploading ISO to Proxmox..."
-    scp "$iso_path" "${PVE_USER}@${PVE_HOST}:${ISO_PATH}/${ISO_NAME}"
+    echo "Uploading ISO to Proxmox (with compression)..."
+    scp -C "$iso_path" "${PVE_USER}@${PVE_HOST}:${ISO_PATH}/${ISO_NAME}"
+    echo "ISO uploaded: ${ISO_PATH}/${ISO_NAME}"
+}
+
+# Generate agent ISO on registry server (much faster - local registry access, local Proxmox copy)
+# Returns kubeconfig path on success
+generate_iso_remote() {
+    local version="$1"
+    local install_config="$2"
+    local agent_config="$3"
+    local registry_host="${LOCAL_REGISTRY%%:*}"
+    local remote_dir="/tmp/agent-install-$$"
+    local cache_dir="/var/lib/openshift-cache"
+
+    echo "Generating agent ISO on registry server (faster)..."
+
+    # Check if openshift-install is cached on registry
+    if ! ssh "root@${registry_host}" "test -x ${cache_dir}/openshift-install-${version}"; then
+        echo "ERROR: openshift-install-${version} not cached on registry"
+        echo "Run mirror first, or fall back to local generation"
+        return 1
+    fi
+
+    # Create remote working directory
+    ssh "root@${registry_host}" "mkdir -p ${remote_dir}"
+
+    # Copy configs to registry (small files, fast)
+    scp -q "$install_config" "root@${registry_host}:${remote_dir}/install-config.yaml"
+    scp -q "$agent_config" "root@${registry_host}:${remote_dir}/agent-config.yaml"
+
+    # Generate ISO on registry server
+    echo "Running openshift-install on registry server..."
+    ssh "root@${registry_host}" "cd ${remote_dir} && ${cache_dir}/openshift-install-${version} agent create image"
+
+    # Copy ISO directly to Proxmox (local network, very fast)
+    echo "Copying ISO to Proxmox (local transfer)..."
+    ssh "root@${registry_host}" "scp -o StrictHostKeyChecking=no ${remote_dir}/agent.x86_64.iso ${PVE_USER}@${PVE_HOST}:${ISO_PATH}/${ISO_NAME}"
+
+    # Copy kubeconfig back to local machine
+    echo "Retrieving kubeconfig..."
+    mkdir -p "${SCRIPT_DIR}/gw/auth"
+    scp -q "root@${registry_host}:${remote_dir}/auth/kubeconfig" "${SCRIPT_DIR}/gw/auth/kubeconfig"
+
+    # Cleanup remote directory
+    ssh "root@${registry_host}" "rm -rf ${remote_dir}"
+
+    echo "ISO generated and uploaded: ${ISO_PATH}/${ISO_NAME}"
+    return 0
 }

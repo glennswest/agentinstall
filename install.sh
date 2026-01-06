@@ -44,12 +44,19 @@ fi
 cp "${SCRIPT_DIR}/install-config.yaml" "${SCRIPT_DIR}/gw/install-config.yaml"
 cp "${SCRIPT_DIR}/agent-config.yaml" "${SCRIPT_DIR}/gw/"
 
-# Step 3: Create agent ISO
+# Step 3: Create agent ISO (try remote first, fall back to local)
 echo ""
 echo "[Step 3] Creating agent ISO..."
-cd "${SCRIPT_DIR}/gw"
-openshift-install agent create image
-cd "${SCRIPT_DIR}"
+if generate_iso_remote "${OCP_VERSION}" "${SCRIPT_DIR}/gw/install-config.yaml" "${SCRIPT_DIR}/gw/agent-config.yaml"; then
+    echo "Remote ISO generation successful"
+else
+    echo "Remote generation failed, falling back to local..."
+    cd "${SCRIPT_DIR}/gw"
+    openshift-install agent create image
+    cd "${SCRIPT_DIR}"
+    echo "[Step 3b] Uploading agent ISO to Proxmox..."
+    upload_iso "${SCRIPT_DIR}/gw/agent.x86_64.iso"
+fi
 
 # Step 4: Setup kubeconfig
 echo ""
@@ -58,14 +65,9 @@ mkdir -p "${KUBECONFIG_DIR}"
 rm -f "${KUBECONFIG_DIR}/config"
 cp "${SCRIPT_DIR}/gw/auth/kubeconfig" "${KUBECONFIG_DIR}/config"
 
-# Step 5: Upload ISO to Proxmox
+# Step 5: Power off and erase existing VMs
 echo ""
-echo "[Step 5] Uploading agent ISO to Proxmox..."
-upload_iso "${SCRIPT_DIR}/gw/agent.x86_64.iso"
-
-# Step 6: Power off and erase existing VMs
-echo ""
-echo "[Step 6] Preparing VMs..."
+echo "[Step 5] Preparing VMs..."
 for vmid in "${CONTROL_VM_IDS[@]}" "${WORKER_VM_IDS[@]}"; do
     poweroff_vm "$vmid" || true
 done
@@ -76,9 +78,9 @@ for vmid in "${CONTROL_VM_IDS[@]}" "${WORKER_VM_IDS[@]}"; do
     erase_disk "$vmid" || true
 done
 
-# Step 7: Power on control nodes first
+# Step 6: Power on control nodes first
 echo ""
-echo "[Step 7] Starting control plane nodes..."
+echo "[Step 6] Starting control plane nodes..."
 for vmid in "${CONTROL_VM_IDS[@]}"; do
     poweron_vm "$vmid"
 done
@@ -87,21 +89,21 @@ done
 echo "Waiting 120 seconds for control plane head start..."
 sleep 120
 
-# Step 8: Power on worker nodes
+# Step 7: Power on worker nodes
 echo ""
-echo "[Step 8] Starting worker nodes..."
+echo "[Step 7] Starting worker nodes..."
 for vmid in "${WORKER_VM_IDS[@]}"; do
     poweron_vm "$vmid"
 done
 
-# Step 9: Wait for bootstrap completion
+# Step 8: Wait for bootstrap completion
 echo ""
-echo "[Step 9] Waiting for bootstrap to complete..."
+echo "[Step 8] Waiting for bootstrap to complete..."
 openshift-install --dir="${SCRIPT_DIR}/gw" agent wait-for bootstrap-complete
 
-# Step 10: Wait for install completion
+# Step 9: Wait for install completion
 echo ""
-echo "[Step 10] Waiting for installation to complete..."
+echo "[Step 9] Waiting for installation to complete..."
 openshift-install --dir="${SCRIPT_DIR}/gw" agent wait-for install-complete
 
 echo ""
