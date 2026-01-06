@@ -134,8 +134,8 @@ class AgentMonitor:
                 ))
             else:
                 self.root.after(0, lambda: self.cluster_status.config(
-                    text="Cannot connect to API",
-                    foreground="red"
+                    text="Waiting on API...",
+                    foreground="orange"
                 ))
                 self.root.after(0, lambda: self.status_label.config(
                     text="Waiting on API..."
