@@ -11,6 +11,7 @@ import json
 import threading
 import time
 import os
+import subprocess
 
 # Configuration
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -37,6 +38,8 @@ class AgentMonitor:
 
         self.cluster_id = None
         self.infra_env_id = None
+        self.mode = "api"  # "api" or "oc"
+        self.api_fail_count = 0
 
         self.setup_ui()
         self.refresh()
@@ -86,14 +89,17 @@ class AgentMonitor:
         self.hosts_tree.pack(fill=tk.BOTH, expand=True)
         self.hosts_tree.bind("<<TreeviewSelect>>", self.on_host_select)
 
-        # Validation details frame
-        details_frame = ttk.LabelFrame(self.root, text="Validation Details", padding=10)
-        details_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+        # Tabbed details section
+        self.notebook = ttk.Notebook(self.root)
+        self.notebook.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
 
-        self.details_text = tk.Text(details_frame, height=15, wrap=tk.WORD)
-        scrollbar = ttk.Scrollbar(details_frame, orient=tk.VERTICAL, command=self.details_text.yview)
+        # Validation tab
+        validation_frame = ttk.Frame(self.notebook, padding=10)
+        self.notebook.add(validation_frame, text="Validation")
+
+        self.details_text = tk.Text(validation_frame, height=15, wrap=tk.WORD)
+        scrollbar = ttk.Scrollbar(validation_frame, orient=tk.VERTICAL, command=self.details_text.yview)
         self.details_text.configure(yscrollcommand=scrollbar.set)
-
         self.details_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
 
@@ -102,6 +108,24 @@ class AgentMonitor:
         self.details_text.tag_configure("failure", foreground="#a05050")
         self.details_text.tag_configure("error", foreground="#8b7355")
         self.details_text.tag_configure("pending", foreground="#777777")
+
+        # Installation tab
+        install_frame = ttk.Frame(self.notebook, padding=10)
+        self.notebook.add(install_frame, text="Installation")
+
+        self.install_text = tk.Text(install_frame, height=15, wrap=tk.WORD)
+        install_scrollbar = ttk.Scrollbar(install_frame, orient=tk.VERTICAL, command=self.install_text.yview)
+        self.install_text.configure(yscrollcommand=install_scrollbar.set)
+        self.install_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        install_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+        # Configure tags for install log
+        self.install_text.tag_configure("stage", foreground="#4a6fa5", font=("Helvetica", 10, "bold"))
+        self.install_text.tag_configure("info", foreground="#555555")
+        self.install_text.tag_configure("done", foreground="#2d7d2d")
+        self.install_text.tag_configure("error", foreground="#a05050")
+
+        self.switched_to_install = False
 
         # Control buttons
         btn_frame = ttk.Frame(self.root)
@@ -135,54 +159,163 @@ class AgentMonitor:
     def get_hosts(self, cluster_id):
         return self.api_request(f"/clusters/{cluster_id}/hosts") or []
 
+    def get_events(self, cluster_id):
+        return self.api_request(f"/events?cluster_id={cluster_id}") or []
+
+    def get_oc_nodes(self):
+        """Get nodes via oc command"""
+        try:
+            result = subprocess.run(
+                ["oc", "get", "nodes", "-o", "json"],
+                capture_output=True, text=True, timeout=10
+            )
+            if result.returncode == 0:
+                return json.loads(result.stdout).get("items", [])
+        except:
+            pass
+        return []
+
+    def get_oc_operators(self):
+        """Get cluster operators via oc command"""
+        try:
+            result = subprocess.run(
+                ["oc", "get", "co", "-o", "json"],
+                capture_output=True, text=True, timeout=10
+            )
+            if result.returncode == 0:
+                return json.loads(result.stdout).get("items", [])
+        except:
+            pass
+        return []
+
     def refresh(self):
         def do_refresh():
-            cluster = self.get_cluster()
+            if self.mode == "api":
+                cluster = self.get_cluster()
 
-            if cluster:
-                self.cluster_id = cluster.get("id")
-                status = cluster.get("status", "unknown")
-                status_info = cluster.get("status_info", "")
-                progress = cluster.get("progress", {})
-                total_pct = progress.get("total_percentage", 0)
+                if cluster:
+                    self.api_fail_count = 0
+                    self.cluster_id = cluster.get("id")
+                    status = cluster.get("status", "unknown")
+                    status_info = cluster.get("status_info", "")
+                    progress = cluster.get("progress", {})
+                    total_pct = progress.get("total_percentage", 0)
 
-                # Update cluster status with percentage
-                if total_pct > 0:
-                    status_text = f"{status.upper()} ({total_pct}%)"
+                    # Update cluster status with percentage
+                    if total_pct > 0:
+                        status_text = f"{status.upper()} ({total_pct}%)"
+                    else:
+                        status_text = status.upper()
+
+                    self.root.after(0, lambda t=status_text, s=status: self.cluster_status.config(
+                        text=t,
+                        foreground=self.status_color(s)
+                    ))
+                    self.root.after(0, lambda: self.cluster_info.config(text=status_info))
+
+                    # Update progress bar
+                    self.root.after(0, lambda p=total_pct: self.progress_bar.config(value=p))
+                    self.root.after(0, lambda p=total_pct: self.progress_label.config(text=f"{p}%"))
+
+                    # Get hosts
+                    hosts = self.get_hosts(self.cluster_id)
+                    self.root.after(0, lambda: self.update_hosts(hosts))
+
+                    # Switch to install tab and update install log when installing
+                    if status in ("installing", "finalizing") and not self.switched_to_install:
+                        self.root.after(0, lambda: self.notebook.select(1))
+                        self.switched_to_install = True
+
+                    if status in ("installing", "finalizing", "installed"):
+                        events = self.get_events(self.cluster_id)
+                        self.root.after(0, lambda e=events: self.update_install_log(e))
+
+                    self.root.after(0, lambda: self.status_label.config(
+                        text=f"Last update: {time.strftime('%H:%M:%S')}"
+                    ))
                 else:
-                    status_text = status.upper()
+                    self.api_fail_count += 1
+                    # After 3 failures, switch to oc mode
+                    if self.api_fail_count >= 3:
+                        self.mode = "oc"
+                        self.root.after(0, lambda: self.cluster_info.config(
+                            text="Switched to cluster monitoring (bootstrap complete)"
+                        ))
+                    else:
+                        self.root.after(0, lambda: self.cluster_status.config(
+                            text="WAITING...",
+                            foreground="#8b7355"
+                        ))
+                        self.root.after(0, lambda: self.status_label.config(
+                            text="Waiting on API..."
+                        ))
 
-                self.root.after(0, lambda t=status_text, s=status: self.cluster_status.config(
-                    text=t,
-                    foreground=self.status_color(s)
-                ))
-                self.root.after(0, lambda: self.cluster_info.config(text=status_info))
-
-                # Update progress bar
-                self.root.after(0, lambda p=total_pct: self.progress_bar.config(value=p))
-                self.root.after(0, lambda p=total_pct: self.progress_label.config(text=f"{p}%"))
-
-                # Get hosts
-                hosts = self.get_hosts(self.cluster_id)
-                self.root.after(0, lambda: self.update_hosts(hosts))
-
-                self.root.after(0, lambda: self.status_label.config(
-                    text=f"Last update: {time.strftime('%H:%M:%S')}"
-                ))
-            else:
-                self.root.after(0, lambda: self.cluster_status.config(
-                    text="WAITING...",
-                    foreground="goldenrod"
-                ))
-                self.root.after(0, lambda: self.status_label.config(
-                    text="Waiting on API..."
-                ))
+            if self.mode == "oc":
+                self.refresh_oc_mode()
 
         # Run in background thread
         threading.Thread(target=do_refresh, daemon=True).start()
 
         # Schedule next refresh
         self.root.after(REFRESH_INTERVAL, self.refresh)
+
+    def refresh_oc_mode(self):
+        """Refresh using oc commands instead of API"""
+        nodes = self.get_oc_nodes()
+        operators = self.get_oc_operators()
+
+        if not nodes:
+            self.root.after(0, lambda: self.cluster_status.config(
+                text="CONNECTING...",
+                foreground="#8b7355"
+            ))
+            return
+
+        # Count ready nodes
+        ready_nodes = sum(1 for n in nodes if any(
+            c.get("type") == "Ready" and c.get("status") == "True"
+            for c in n.get("status", {}).get("conditions", [])
+        ))
+        total_nodes = len(nodes)
+
+        # Count available operators
+        available_ops = sum(1 for o in operators if any(
+            c.get("type") == "Available" and c.get("status") == "True"
+            for c in o.get("status", {}).get("conditions", [])
+        ))
+        total_ops = len(operators)
+
+        # Calculate progress (nodes=30%, operators=70%)
+        node_pct = (ready_nodes / total_nodes * 30) if total_nodes > 0 else 0
+        op_pct = (available_ops / total_ops * 70) if total_ops > 0 else 0
+        total_pct = int(node_pct + op_pct)
+
+        if total_pct >= 100:
+            status_text = "INSTALLED"
+            status = "installed"
+        else:
+            status_text = f"FINALIZING ({total_pct}%)"
+            status = "installing"
+
+        self.root.after(0, lambda t=status_text, s=status: self.cluster_status.config(
+            text=t,
+            foreground=self.status_color(s)
+        ))
+        self.root.after(0, lambda: self.cluster_info.config(
+            text=f"Nodes: {ready_nodes}/{total_nodes} Ready | Operators: {available_ops}/{total_ops} Available"
+        ))
+        self.root.after(0, lambda p=total_pct: self.progress_bar.config(value=p))
+        self.root.after(0, lambda p=total_pct: self.progress_label.config(text=f"{total_pct}%"))
+
+        # Update hosts table with nodes and operator rollout info
+        self.root.after(0, lambda n=nodes, o=operators: self.update_nodes_table(n, o))
+
+        # Update install log with operators
+        self.root.after(0, lambda o=operators: self.update_operators_log(o))
+
+        self.root.after(0, lambda: self.status_label.config(
+            text=f"Last update: {time.strftime('%H:%M:%S')} (oc)"
+        ))
 
     def status_color(self, status):
         colors = {
@@ -273,6 +406,154 @@ class AgentMonitor:
 
             # Store for details
             self.hosts_data[host_id] = host
+
+    def update_install_log(self, events):
+        """Update installation event log"""
+        self.install_text.delete("1.0", tk.END)
+
+        # Show recent events (last 50)
+        for event in events[-50:]:
+            msg = event.get("message", "")
+            severity = event.get("severity", "info")
+
+            # Color based on content
+            if "Done" in msg or "installed" in msg:
+                tag = "done"
+            elif "error" in msg.lower() or severity == "error":
+                tag = "error"
+            else:
+                tag = "info"
+
+            self.install_text.insert(tk.END, f"INFO {msg}\n", tag)
+
+        # Auto-scroll to bottom
+        self.install_text.see(tk.END)
+
+    def update_nodes_table(self, nodes, operators=None):
+        """Update hosts table with node info from oc"""
+        for item in self.hosts_tree.get_children():
+            self.hosts_tree.delete(item)
+
+        self.hosts_data = {}
+
+        # Build map of which operators are rolling out to which nodes
+        node_rollouts = {}
+        control_plane_ops = {"etcd", "kube-apiserver", "kube-controller-manager",
+                            "kube-scheduler", "openshift-apiserver", "authentication",
+                            "openshift-controller-manager"}
+
+        if operators:
+            for op in operators:
+                op_name = op.get("metadata", {}).get("name", "")
+                conditions = op.get("status", {}).get("conditions", [])
+                is_progressing = any(
+                    c.get("type") == "Progressing" and c.get("status") == "True"
+                    for c in conditions
+                )
+
+                if is_progressing:
+                    # Control plane operators roll out to master nodes
+                    if op_name in control_plane_ops:
+                        for node in nodes:
+                            node_name = node.get("metadata", {}).get("name", "")
+                            labels = node.get("metadata", {}).get("labels", {})
+                            is_master = "node-role.kubernetes.io/master" in labels or \
+                                       "node-role.kubernetes.io/control-plane" in labels
+                            if is_master:
+                                if node_name not in node_rollouts:
+                                    node_rollouts[node_name] = []
+                                if op_name not in node_rollouts[node_name]:
+                                    node_rollouts[node_name].append(op_name)
+
+        # Sort nodes: masters first, then workers
+        def sort_key(n):
+            name = n.get("metadata", {}).get("name", "")
+            labels = n.get("metadata", {}).get("labels", {})
+            is_master = "node-role.kubernetes.io/master" in labels or "node-role.kubernetes.io/control-plane" in labels
+            return (0 if is_master else 1, name)
+
+        for node in sorted(nodes, key=sort_key):
+            name = node.get("metadata", {}).get("name", "unknown")
+            labels = node.get("metadata", {}).get("labels", {})
+
+            # Determine role
+            if "node-role.kubernetes.io/master" in labels or "node-role.kubernetes.io/control-plane" in labels:
+                role = "master"
+            elif "node-role.kubernetes.io/worker" in labels:
+                role = "worker"
+            else:
+                role = "unknown"
+
+            # Get status
+            conditions = node.get("status", {}).get("conditions", [])
+            ready = any(c.get("type") == "Ready" and c.get("status") == "True" for c in conditions)
+            status = "Ready" if ready else "NotReady"
+
+            # Get version
+            version = node.get("status", {}).get("nodeInfo", {}).get("kubeletVersion", "")
+
+            # Show rollout progress instead of age
+            rollouts = node_rollouts.get(name, [])
+            if rollouts:
+                progress = ", ".join(rollouts[:2])
+                if len(rollouts) > 2:
+                    progress += f" +{len(rollouts)-2}"
+            else:
+                progress = "Complete"
+
+            self.hosts_tree.insert("", tk.END, iid=name, values=(
+                name, role, status, version, progress
+            ))
+
+            if rollouts:
+                tag = "installing-in-progress"
+            elif ready:
+                tag = "ready"
+            else:
+                tag = "error"
+            self.hosts_tree.tag_configure(tag, foreground=self.status_color(tag))
+            self.hosts_tree.item(name, tags=(tag,))
+
+    def update_operators_log(self, operators):
+        """Update install log with operator status"""
+        self.install_text.delete("1.0", tk.END)
+
+        # Sort: unavailable first, then by name
+        def sort_key(o):
+            name = o.get("metadata", {}).get("name", "")
+            conditions = o.get("status", {}).get("conditions", [])
+            available = any(c.get("type") == "Available" and c.get("status") == "True" for c in conditions)
+            return (0 if not available else 1, name)
+
+        for op in sorted(operators, key=sort_key):
+            name = op.get("metadata", {}).get("name", "unknown")
+            conditions = op.get("status", {}).get("conditions", [])
+
+            available = any(c.get("type") == "Available" and c.get("status") == "True" for c in conditions)
+            progressing = any(c.get("type") == "Progressing" and c.get("status") == "True" for c in conditions)
+            degraded = any(c.get("type") == "Degraded" and c.get("status") == "True" for c in conditions)
+
+            # Get message if progressing
+            msg = ""
+            for c in conditions:
+                if c.get("type") == "Progressing" and c.get("message"):
+                    msg = c.get("message", "")[:60]
+                    break
+
+            if available and not progressing:
+                self.install_text.insert(tk.END, f"✓ {name}\n", "done")
+            elif degraded:
+                self.install_text.insert(tk.END, f"✗ {name}\n", "error")
+                if msg:
+                    self.install_text.insert(tk.END, f"    {msg}\n", "info")
+            elif progressing:
+                self.install_text.insert(tk.END, f"● {name}\n", "stage")
+                if msg:
+                    self.install_text.insert(tk.END, f"    {msg}\n", "info")
+            else:
+                self.install_text.insert(tk.END, f"○ {name}\n", "info")
+
+        self.install_text.see(tk.END)
 
     def on_host_select(self, event):
         selection = self.hosts_tree.selection()
