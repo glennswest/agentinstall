@@ -101,11 +101,12 @@ for vmid in "${CONTROL_VM_IDS[@]}" "${WORKER_VM_IDS[@]}"; do
     poweron_vm "$vmid"
 done
 
-# Start monitor GUI in background
+# Start monitor GUI in background (detached from script)
 echo ""
 echo "Starting installation monitor..."
-"${SCRIPT_DIR}/venv/bin/python3" "${SCRIPT_DIR}/monitor.py" &
+nohup "${SCRIPT_DIR}/venv/bin/python3" -u "${SCRIPT_DIR}/monitor.py" > /tmp/monitor.log 2>&1 &
 MONITOR_PID=$!
+disown $MONITOR_PID
 echo "Monitor PID: $MONITOR_PID"
 
 # Step 6: Wait for bootstrap completion
