@@ -26,6 +26,40 @@ echo "Version: ${OCP_VERSION}"
 echo "Registry: ${LOCAL_REGISTRY}"
 echo "=========================================="
 
+# Pre-flight check: Verify key registry artifacts exist
+echo ""
+echo "[Pre-flight] Checking registry artifacts..."
+REGISTRY_HOST="${LOCAL_REGISTRY%%:*}"
+RELEASE_IMAGE="${LOCAL_REGISTRY}/${LOCAL_REPOSITORY}:${OCP_VERSION}-${ARCHITECTURE}"
+
+# Check release image exists
+if ! ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR \
+    "root@${REGISTRY_HOST}" "oc image info ${RELEASE_IMAGE} --insecure >/dev/null 2>&1"; then
+    echo "ERROR: Release image not found: ${RELEASE_IMAGE}"
+    echo "Run mirror first to sync the release to your registry."
+    exit 1
+fi
+echo "  ✓ Release image exists"
+
+# Get machine-os-images digest and verify it exists
+MOS_DIGEST=$(ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR \
+    "root@${REGISTRY_HOST}" "oc adm release info ${RELEASE_IMAGE} --insecure 2>/dev/null | grep machine-os-images | awk '{print \$2}'" 2>/dev/null)
+if [ -n "$MOS_DIGEST" ]; then
+    MOS_IMAGE="${LOCAL_REGISTRY}/${LOCAL_REPOSITORY}@${MOS_DIGEST}"
+    if ! ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR \
+        "root@${REGISTRY_HOST}" "oc image info ${MOS_IMAGE} --insecure >/dev/null 2>&1"; then
+        echo "ERROR: machine-os-images not found: ${MOS_IMAGE}"
+        echo "This component is required for ISO generation."
+        echo "Re-run mirror to sync all release components."
+        exit 1
+    fi
+    echo "  ✓ machine-os-images exists"
+else
+    echo "  ! Could not verify machine-os-images (may be older release)"
+fi
+
+echo "Registry pre-flight checks passed."
+
 # Start VM poweroff immediately in background (gives time to shut down)
 VM_PREP_LOG=$(mktemp)
 (
