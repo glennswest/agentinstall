@@ -9,6 +9,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/config.sh"
 source "${SCRIPT_DIR}/lib/vm.sh"
 
+# Add ~/.local/bin to PATH for openshift-install
+export PATH="${HOME}/.local/bin:${PATH}"
+
 if [ -z "$1" ]; then
     echo "Usage: $0 <ocp-version>"
     echo "Example: $0 4.14.10"
@@ -44,9 +47,6 @@ echo "[Step 2] Preparing installation directory..."
 rm -rf "${SCRIPT_DIR}/gw"
 mkdir -p "${SCRIPT_DIR}/gw"
 
-# Clean up old ISO from Proxmox to ensure fresh generation
-ssh root@${PVE_HOST} "rm -f /var/lib/vz/template/iso/coreos-x86_64.iso" 2>/dev/null || true
-
 # Copy and prepare install-config
 if [ ! -f "${SCRIPT_DIR}/install-config.yaml" ]; then
     echo "ERROR: install-config.yaml not found!"
@@ -62,7 +62,20 @@ echo ""
 echo "[Step 3] Creating agent ISO..."
 
 # Wait for VM poweroff to complete (started at script beginning)
+echo "Waiting for VMs to stop..."
 wait $VM_POWEROFF_PID
+echo "VMs stopped"
+
+# Delete old ISO from Proxmox AFTER VMs are stopped (ISO can't be deleted while in use)
+echo "Deleting old ISO from Proxmox..."
+ssh root@${PVE_HOST} "rm -f ${ISO_PATH}/${ISO_NAME}"
+# Verify deletion
+if ssh root@${PVE_HOST} "test -f ${ISO_PATH}/${ISO_NAME}"; then
+    echo "ERROR: Failed to delete old ISO - file still exists!"
+    echo "VMs may still be using it. Please stop VMs manually and retry."
+    exit 1
+fi
+echo "Old ISO deleted"
 
 # Start disk wipe in background (runs parallel to ISO generation)
 (
@@ -76,8 +89,13 @@ wait $VM_POWEROFF_PID
 VM_PREP_PID=$!
 
 # Generate ISO (foreground so we see progress)
-if generate_iso_remote "${OCP_VERSION}" "${SCRIPT_DIR}/gw/install-config.yaml" "${SCRIPT_DIR}/gw/agent-config.yaml"; then
+generate_iso_remote "${OCP_VERSION}" "${SCRIPT_DIR}/gw/install-config.yaml" "${SCRIPT_DIR}/gw/agent-config.yaml"
+ISO_RESULT=$?
+if [ $ISO_RESULT -eq 0 ]; then
     echo "Remote ISO generation successful"
+elif [ $ISO_RESULT -eq 2 ]; then
+    echo "ERROR: ISO checksum verification failed - aborting"
+    exit 1
 else
     echo "Remote generation failed, falling back to local..."
     cd "${SCRIPT_DIR}/gw"
@@ -105,15 +123,33 @@ mkdir -p "${KUBECONFIG_DIR}"
 rm -f "${KUBECONFIG_DIR}/config"
 cp "${SCRIPT_DIR}/gw/auth/kubeconfig" "${KUBECONFIG_DIR}/config"
 
-# Step 5: Verify ISO and power on all nodes
+# Step 5: Verify ISO checksum and power on all nodes
 echo ""
-echo "[Step 5] Verifying ISO before starting nodes..."
-ISO_SIZE=$(ssh root@${PVE_HOST} "stat -c%s ${ISO_PATH}/${ISO_NAME} 2>/dev/null || echo 0")
-if [ "$ISO_SIZE" -lt 1000000000 ]; then
-    echo "ERROR: ISO missing or too small on Proxmox (${ISO_SIZE} bytes)"
-    exit 1
+echo "[Step 5] Verifying ISO checksum before starting nodes..."
+EXPECTED_CHECKSUM=$(cat "${SCRIPT_DIR}/gw/.iso_checksum" 2>/dev/null || echo "")
+if [ -z "$EXPECTED_CHECKSUM" ]; then
+    echo "WARNING: No saved checksum found, using size check only"
+    ISO_SIZE=$(ssh root@${PVE_HOST} "stat -c%s ${ISO_PATH}/${ISO_NAME} 2>/dev/null || echo 0")
+    if [ "$ISO_SIZE" -lt 1000000000 ]; then
+        echo "ERROR: ISO missing or too small on Proxmox (${ISO_SIZE} bytes)"
+        exit 1
+    fi
+    echo "ISO size verified: ${ISO_SIZE} bytes"
+else
+    ACTUAL_CHECKSUM=$(ssh root@${PVE_HOST} "sha256sum ${ISO_PATH}/${ISO_NAME} 2>/dev/null | cut -d' ' -f1 || echo ''")
+    if [ -z "$ACTUAL_CHECKSUM" ]; then
+        echo "ERROR: ISO missing on Proxmox!"
+        exit 1
+    fi
+    if [ "$EXPECTED_CHECKSUM" != "$ACTUAL_CHECKSUM" ]; then
+        echo "ERROR: ISO checksum mismatch!"
+        echo "  Expected: ${EXPECTED_CHECKSUM}"
+        echo "  Actual:   ${ACTUAL_CHECKSUM}"
+        echo "The ISO on Proxmox does not match the generated ISO."
+        exit 1
+    fi
+    echo "ISO checksum verified: ${ACTUAL_CHECKSUM:0:16}..."
 fi
-echo "ISO verified: ${ISO_SIZE} bytes on ${PVE_HOST}"
 
 echo ""
 echo "[Step 5] Starting all nodes..."
@@ -153,12 +189,21 @@ for i in {1..6}; do
     fi
 done
 
-openshift-install --dir="${SCRIPT_DIR}/gw" agent wait-for bootstrap-complete
+# Use stdbuf to force line buffering on output
+if command -v stdbuf &>/dev/null; then
+    stdbuf -oL openshift-install --dir="${SCRIPT_DIR}/gw" agent wait-for bootstrap-complete
+else
+    openshift-install --dir="${SCRIPT_DIR}/gw" agent wait-for bootstrap-complete
+fi
 
 # Step 7: Wait for install completion
 echo ""
 echo "[Step 7] Waiting for installation to complete..."
-openshift-install --dir="${SCRIPT_DIR}/gw" agent wait-for install-complete
+if command -v stdbuf &>/dev/null; then
+    stdbuf -oL openshift-install --dir="${SCRIPT_DIR}/gw" agent wait-for install-complete
+else
+    openshift-install --dir="${SCRIPT_DIR}/gw" agent wait-for install-complete
+fi
 
 echo ""
 echo "=========================================="

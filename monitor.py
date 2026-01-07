@@ -133,7 +133,23 @@ class AgentMonitor:
         self.notebook = ttk.Notebook(self.root)
         self.notebook.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
 
-        # Validation tab
+        # Summary tab (all failing validations)
+        summary_frame = ttk.Frame(self.notebook, padding=10)
+        self.notebook.add(summary_frame, text="Summary")
+
+        self.summary_text = tk.Text(summary_frame, height=15, wrap=tk.WORD)
+        summary_scrollbar = ttk.Scrollbar(summary_frame, orient=tk.VERTICAL, command=self.summary_text.yview)
+        self.summary_text.configure(yscrollcommand=summary_scrollbar.set)
+        self.summary_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        summary_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+        # Configure tags for summary
+        self.summary_text.tag_configure("host", foreground="#4a6fa5", font=("Helvetica", 10, "bold"))
+        self.summary_text.tag_configure("failure", foreground="#a05050")
+        self.summary_text.tag_configure("error", foreground="#8b7355")
+        self.summary_text.tag_configure("success", foreground="#2d7d2d")
+
+        # Validation tab (selected host details)
         validation_frame = ttk.Frame(self.notebook, padding=10)
         self.notebook.add(validation_frame, text="Validation")
 
@@ -202,7 +218,20 @@ class AgentMonitor:
         return None
 
     def get_hosts(self, cluster_id):
-        return self.api_request(f"/clusters/{cluster_id}/hosts") or []
+        hosts = self.api_request(f"/clusters/{cluster_id}/hosts") or []
+        if hosts:
+            h = hosts[0]
+            log(f"Host keys: {list(h.keys())}")
+            log(f"requested_hostname: {h.get('requested_hostname')}")
+            log(f"hostname: {h.get('hostname')}")
+            inv = h.get('inventory', '')
+            if inv:
+                try:
+                    inv_data = json.loads(inv)
+                    log(f"inventory.hostname: {inv_data.get('hostname')}")
+                except:
+                    log(f"inventory parse failed")
+        return hosts
 
     def get_events(self, cluster_id):
         return self.api_request(f"/events?cluster_id={cluster_id}") or []
@@ -285,6 +314,11 @@ class AgentMonitor:
                     if status in ("installing", "finalizing", "installed"):
                         events = self.get_events(self.cluster_id)
                         self.root.after(0, lambda e=events: self.update_install_log(e))
+
+                    # Switch to oc mode when cluster is installed or finalizing
+                    if status in ("installed", "finalizing") and self.api_success_count > 5:
+                        self.mode = "oc"
+                        log(f"Switching to oc mode (cluster status={status})")
 
                     self.root.after(0, lambda: self.status_label.config(
                         text=f"Last update: {time.strftime('%H:%M:%S')}"
@@ -381,6 +415,30 @@ class AgentMonitor:
             text=f"Last update: {time.strftime('%H:%M:%S')} (oc)"
         ))
 
+    def get_hostname(self, host):
+        """Get hostname from host data, falling back to inventory or IP"""
+        hostname = host.get("requested_hostname") or ""
+        source = "requested_hostname" if hostname else ""
+        if not hostname:
+            try:
+                inventory = json.loads(host.get("inventory", "{}"))
+                hostname = inventory.get("hostname") or ""
+                if hostname:
+                    source = "inventory.hostname"
+                if not hostname:
+                    ifaces = inventory.get("interfaces", [])
+                    for iface in ifaces:
+                        addrs = iface.get("ipv4_addresses", [])
+                        if addrs:
+                            hostname = addrs[0].split("/")[0]
+                            source = "ipv4_address"
+                            break
+            except Exception as e:
+                log(f"get_hostname error: {e}")
+        result = hostname or "unknown"
+        log(f"get_hostname: {result} (from {source or 'none'})")
+        return result
+
     def status_color(self, status):
         colors = {
             "ready": "#2d7d2d",
@@ -413,28 +471,27 @@ class AgentMonitor:
             role_order = 0 if role == "master" else 1
             return (role_order, hostname)
 
+        first_failing_host_id = None
         for host in sorted(hosts, key=sort_key):
             host_id = host.get("id")
-            hostname = host.get("requested_hostname") or "unknown"
+            hostname = self.get_hostname(host)
             role = host.get("role", "auto-assign")
             status = host.get("status", "unknown")
             status_info = host.get("status_info", "")
 
-            # Try to get hostname from inventory if not set
-            try:
-                inventory = json.loads(host.get("inventory", "{}"))
-                if hostname == "unknown" and inventory.get("hostname"):
-                    hostname = inventory.get("hostname")
-                # Get IP if still unknown
-                if hostname == "unknown":
-                    ifaces = inventory.get("interfaces", [])
-                    for iface in ifaces:
-                        addrs = iface.get("ipv4_addresses", [])
-                        if addrs:
-                            hostname = addrs[0].split("/")[0]
+            # Track first host with failing validation
+            if not first_failing_host_id:
+                try:
+                    validations = json.loads(host.get("validations_info", "{}"))
+                    for category, checks in validations.items():
+                        for check in checks:
+                            if check.get("status") in ("failure", "error"):
+                                first_failing_host_id = host_id
+                                break
+                        if first_failing_host_id:
                             break
-            except:
-                pass
+                except:
+                    pass
 
             # Get disk info from inventory
             disk_info = "N/A"
@@ -482,6 +539,43 @@ class AgentMonitor:
                 self.selected_host_id = children[0]
                 self.hosts_tree.selection_set(self.selected_host_id)
                 self.show_host_details(self.selected_host_id)
+
+        # Update summary tab with all failing validations
+        self.update_summary(hosts)
+
+    def update_summary(self, hosts):
+        """Update summary tab with all failing validations across all hosts"""
+        self.summary_text.delete("1.0", tk.END)
+
+        has_failures = False
+        for host in hosts:
+            hostname = self.get_hostname(host)
+
+            # Collect failures for this host
+            host_failures = []
+            try:
+                validations = json.loads(host.get("validations_info", "{}"))
+                for category, checks in validations.items():
+                    for check in checks:
+                        status = check.get("status", "")
+                        if status in ("failure", "error"):
+                            check_id = check.get("id", "")
+                            msg = check.get("message", "")
+                            host_failures.append((status, check_id, msg))
+            except:
+                pass
+
+            # Display failures for this host
+            if host_failures:
+                has_failures = True
+                self.summary_text.insert(tk.END, f"\n{hostname}\n", "host")
+                for status, check_id, msg in host_failures:
+                    tag = "failure" if status == "failure" else "error"
+                    symbol = "✗" if status == "failure" else "!"
+                    self.summary_text.insert(tk.END, f"  {symbol} {check_id}: {msg}\n", tag)
+
+        if not has_failures:
+            self.summary_text.insert(tk.END, "All validations passing\n", "success")
 
     def update_install_log(self, events):
         """Update installation event log"""
@@ -652,7 +746,7 @@ class AgentMonitor:
 
         self.details_text.delete("1.0", tk.END)
 
-        hostname = host.get("requested_hostname", "unknown")
+        hostname = self.get_hostname(host)
         status = host.get("status", "unknown")
         self.details_text.insert(tk.END, f"=== {hostname} ({status}) ===\n\n")
 

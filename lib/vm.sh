@@ -109,7 +109,7 @@ create_vm_iso() {
         --memory ${memory} \
         --net0 bridge=${NETWORK_BRIDGE},virtio=${mac} \
         --ide2 local:iso/${ISO_NAME},media=cdrom \
-        --boot order=ide2\;scsi0 \
+        --bootdisk scsi0 \
         --scsihw virtio-scsi-single \
         --scsi0 ${LVM_STORAGE}:${lvmname},size=${disksize}"
 }
@@ -182,19 +182,46 @@ generate_iso_remote() {
     fi
     echo "Base ISO checksum verified: OK"
 
+    # Get checksum of generated agent ISO on registry (BEFORE copy)
+    echo "Calculating agent ISO checksum on registry..."
+    local source_checksum
+    source_checksum=$(ssh $SSH_OPTS "root@${registry_host}" "sha256sum ${remote_dir}/agent.x86_64.iso | cut -d' ' -f1")
+    if [ -z "$source_checksum" ]; then
+        echo "ERROR: Failed to calculate source ISO checksum"
+        return 1
+    fi
+    echo "Source ISO checksum: ${source_checksum}"
+
     # Copy ISO directly to Proxmox (local network, fast)
     echo "Copying ISO to Proxmox..."
     ssh $SSH_OPTS "root@${registry_host}" "scp -O -o StrictHostKeyChecking=no ${remote_dir}/agent.x86_64.iso ${PVE_USER}@${PVE_HOST}:${ISO_PATH}/${ISO_NAME}"
 
-    # Verify ISO was copied successfully
-    echo "Verifying ISO on Proxmox..."
-    local pve_iso_size
-    pve_iso_size=$(ssh $SSH_OPTS "${PVE_USER}@${PVE_HOST}" "stat -c%s ${ISO_PATH}/${ISO_NAME} 2>/dev/null || echo 0")
-    if [ "$pve_iso_size" -lt 1000000000 ]; then
-        echo "ERROR: ISO on Proxmox is too small (${pve_iso_size} bytes), expected >1GB"
+    # Verify ISO checksum on Proxmox matches source (AFTER copy)
+    echo "Verifying ISO checksum on Proxmox..."
+    local dest_checksum
+    dest_checksum=$(ssh $SSH_OPTS "${PVE_USER}@${PVE_HOST}" "sha256sum ${ISO_PATH}/${ISO_NAME} | cut -d' ' -f1")
+    if [ -z "$dest_checksum" ]; then
+        echo "ERROR: Failed to calculate destination ISO checksum"
         return 1
     fi
-    echo "ISO on Proxmox verified: ${pve_iso_size} bytes"
+    echo "Destination ISO checksum: ${dest_checksum}"
+
+    if [ "$source_checksum" != "$dest_checksum" ]; then
+        echo "ERROR: ISO checksum mismatch after copy!"
+        echo "  Source (registry): ${source_checksum}"
+        echo "  Dest (Proxmox):    ${dest_checksum}"
+        echo "Retrying copy..."
+        ssh $SSH_OPTS "root@${registry_host}" "scp -O -o StrictHostKeyChecking=no ${remote_dir}/agent.x86_64.iso ${PVE_USER}@${PVE_HOST}:${ISO_PATH}/${ISO_NAME}"
+        dest_checksum=$(ssh $SSH_OPTS "${PVE_USER}@${PVE_HOST}" "sha256sum ${ISO_PATH}/${ISO_NAME} | cut -d' ' -f1")
+        if [ "$source_checksum" != "$dest_checksum" ]; then
+            echo "ERROR: ISO checksum still mismatched after retry!"
+            return 2  # Return 2 for checksum errors (don't fallback)
+        fi
+    fi
+    echo "ISO checksum verified: OK"
+
+    # Save checksum for later verification (before VM boot)
+    echo "$source_checksum" > "${SCRIPT_DIR}/gw/.iso_checksum"
 
     # Copy all generated files back to local machine (needed for wait-for commands)
     echo "Retrieving generated assets..."
