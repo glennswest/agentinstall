@@ -220,7 +220,7 @@ class AgentMonitor:
 
                     # Get hosts
                     hosts = self.get_hosts(self.cluster_id)
-                    self.root.after(0, lambda: self.update_hosts(hosts))
+                    self.root.after(0, lambda h=hosts: self.update_hosts(h))
 
                     # Switch to install tab and update install log when installing
                     if status in ("installing", "finalizing") and not self.switched_to_install:
@@ -255,8 +255,13 @@ class AgentMonitor:
             if self.mode == "oc":
                 self.refresh_oc_mode()
 
-        # Run in background thread
-        threading.Thread(target=do_refresh, daemon=True).start()
+        # Run in background thread with error handling
+        def safe_refresh():
+            try:
+                do_refresh()
+            except Exception as e:
+                print(f"Refresh error: {e}")
+        threading.Thread(target=safe_refresh, daemon=True).start()
 
         # Schedule next refresh
         self.root.after(REFRESH_INTERVAL, self.refresh)
