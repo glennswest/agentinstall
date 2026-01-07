@@ -22,3 +22,4 @@ kubeconfig
 .openshift-install-source
 bin/
 venv/
+__pycache__/
