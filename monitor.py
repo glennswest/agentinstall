@@ -12,10 +12,12 @@ import threading
 import time
 import os
 import subprocess
+import yaml
 
 # Configuration
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 STATE_FILE = os.path.join(SCRIPT_DIR, "gw", ".openshift_install_state.json")
+AGENT_CONFIG_FILE = os.path.join(SCRIPT_DIR, "agent-config.yaml")
 API_URL = "http://192.168.1.201:8090/api/assisted-install/v2"
 REFRESH_INTERVAL = 5000  # ms
 EVENT_POLL_INTERVAL = 2  # seconds - faster polling for events
@@ -66,6 +68,11 @@ class AgentMonitor:
         self.selected_host_id = None
         self.seen_event_ids = set()
         self.event_streamer_running = False
+
+        # Load hostname mappings from agent-config.yaml
+        self.hostname_by_mac = {}
+        self.hostname_by_role = {"master": [], "worker": []}
+        self._load_agent_config()
 
         # Clear logs and write startup info
         with open(LOG_FILE, "w") as f:
@@ -218,12 +225,19 @@ class AgentMonitor:
         return None
 
     def get_hosts(self, cluster_id):
+        # Try infra-env hosts first (has more complete data including requested_hostname)
+        if self.infra_env_id:
+            hosts = self.api_request(f"/infra-envs/{self.infra_env_id}/hosts") or []
+            if hosts and hosts[0].get("requested_hostname"):
+                log(f"Using infra-env hosts (has requested_hostname)")
+                return hosts
+
+        # Fall back to cluster hosts
         hosts = self.api_request(f"/clusters/{cluster_id}/hosts") or []
         if hosts:
             h = hosts[0]
             log(f"Host keys: {list(h.keys())}")
             log(f"requested_hostname: {h.get('requested_hostname')}")
-            log(f"hostname: {h.get('hostname')}")
             inv = h.get('inventory', '')
             if inv:
                 try:
@@ -280,6 +294,7 @@ class AgentMonitor:
                     self.api_fail_count = 0
                     self.api_success_count += 1
                     self.cluster_id = cluster.get("id")
+                    self.infra_env_id = cluster.get("infra_env_id")
                     status = cluster.get("status", "unknown")
                     status_info = cluster.get("status_info", "")
                     progress = cluster.get("progress", {})
@@ -415,26 +430,79 @@ class AgentMonitor:
             text=f"Last update: {time.strftime('%H:%M:%S')} (oc)"
         ))
 
+    def _load_agent_config(self):
+        """Load hostname mappings from agent-config.yaml"""
+        try:
+            if os.path.exists(AGENT_CONFIG_FILE):
+                with open(AGENT_CONFIG_FILE, 'r') as f:
+                    config = yaml.safe_load(f)
+                    for host in config.get("hosts", []):
+                        hostname = host.get("hostname", "")
+                        role = host.get("role", "worker")
+                        # Map by MAC address
+                        for iface in host.get("interfaces", []):
+                            mac = iface.get("macAddress", "").lower()
+                            if mac and hostname:
+                                self.hostname_by_mac[mac] = hostname
+                        # Map by role (ordered list)
+                        if hostname:
+                            if role == "master":
+                                self.hostname_by_role["master"].append(hostname)
+                            else:
+                                self.hostname_by_role["worker"].append(hostname)
+                log(f"Loaded {len(self.hostname_by_mac)} hostname mappings from agent-config.yaml")
+                log(f"Masters: {self.hostname_by_role['master']}")
+                log(f"Workers: {self.hostname_by_role['worker']}")
+        except Exception as e:
+            log(f"Failed to load agent-config.yaml: {e}")
+
     def get_hostname(self, host):
-        """Get hostname from host data, falling back to inventory or IP"""
+        """Get hostname from host data, falling back to agent-config.yaml mappings"""
         hostname = host.get("requested_hostname") or ""
         source = "requested_hostname" if hostname else ""
+
+        # Try inventory
         if not hostname:
             try:
                 inventory = json.loads(host.get("inventory", "{}"))
                 hostname = inventory.get("hostname") or ""
                 if hostname:
                     source = "inventory.hostname"
+                # Try MAC address lookup from inventory interfaces
                 if not hostname:
                     ifaces = inventory.get("interfaces", [])
                     for iface in ifaces:
-                        addrs = iface.get("ipv4_addresses", [])
-                        if addrs:
-                            hostname = addrs[0].split("/")[0]
-                            source = "ipv4_address"
+                        mac = iface.get("mac_address", "").lower()
+                        if mac in self.hostname_by_mac:
+                            hostname = self.hostname_by_mac[mac]
+                            source = "agent-config (MAC)"
                             break
+                        # Fallback to IP
+                        if not hostname:
+                            addrs = iface.get("ipv4_addresses", [])
+                            if addrs:
+                                hostname = addrs[0].split("/")[0]
+                                source = "ipv4_address"
+                                break
             except Exception as e:
-                log(f"get_hostname error: {e}")
+                log(f"get_hostname inventory parse error: {e}")
+
+        # Fallback: use role-based lookup from agent-config.yaml
+        if not hostname or hostname == "unknown":
+            role = host.get("role") or host.get("suggested_role") or ""
+            if role == "master" and self.hostname_by_role["master"]:
+                # Use bootstrap flag or index to pick hostname
+                bootstrap = host.get("bootstrap", False)
+                if bootstrap:
+                    hostname = self.hostname_by_role["master"][0]
+                    source = "agent-config (bootstrap)"
+            # If still no match, show role with partial ID
+            if not hostname:
+                host_id = host.get("id", "")[:8]
+                if role:
+                    hostname = f"{role}-{host_id}"
+                    source = "role+id"
+
         result = hostname or "unknown"
         log(f"get_hostname: {result} (from {source or 'none'})")
         return result
