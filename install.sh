@@ -112,6 +112,29 @@ echo "Monitor PID: $MONITOR_PID"
 # Step 6: Wait for bootstrap completion
 echo ""
 echo "[Step 6] Waiting for bootstrap to complete..."
+
+# Check for kube-apiserver crash loop (bad ISO detection)
+echo "Checking for bootkube health..."
+KUBE_ERROR_COUNT=0
+for i in {1..6}; do
+    sleep 30
+    if ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=5 \
+       core@${RENDEZVOUS_IP} "sudo journalctl -u bootkube.service --no-pager 2>/dev/null | grep -q 'missing operand kubernetes version'" 2>/dev/null; then
+        KUBE_ERROR_COUNT=$((KUBE_ERROR_COUNT + 1))
+        echo "Warning: kube-apiserver render failing ($KUBE_ERROR_COUNT/3)"
+        if [ $KUBE_ERROR_COUNT -ge 3 ]; then
+            echo ""
+            echo "ERROR: kube-apiserver is crash-looping with 'missing operand kubernetes version'"
+            echo "This indicates the ISO was generated with a mismatched openshift-install binary."
+            echo "Fix: Re-extract openshift-install from registry and regenerate ISO"
+            echo ""
+            exit 1
+        fi
+    else
+        break
+    fi
+done
+
 openshift-install --dir="${SCRIPT_DIR}/gw" agent wait-for bootstrap-complete
 
 # Step 7: Wait for install completion
