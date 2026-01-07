@@ -18,14 +18,25 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 STATE_FILE = os.path.join(SCRIPT_DIR, "gw", ".openshift_install_state.json")
 API_URL = "http://192.168.1.201:8090/api/assisted-install/v2"
 REFRESH_INTERVAL = 5000  # ms
-
+EVENT_POLL_INTERVAL = 2  # seconds - faster polling for events
 
 LOG_FILE = "/tmp/monitor-debug.log"
+EVENT_FILE = "/tmp/monitor-events.log"
 
 def log(msg):
     """Debug logging to file"""
     with open(LOG_FILE, "a") as f:
         f.write(f"[{time.strftime('%H:%M:%S')}] {msg}\n")
+        f.flush()
+
+def log_event(msg, severity="info"):
+    """Log event to event file and print to console"""
+    timestamp = time.strftime('%H:%M:%S')
+    prefix = {"error": "ERR", "warning": "WRN", "info": "   ", "critical": "CRT"}.get(severity, "   ")
+    line = f"[{timestamp}] {prefix} {msg}"
+    print(line, flush=True)
+    with open(EVENT_FILE, "a") as f:
+        f.write(line + "\n")
         f.flush()
 
 def get_auth_token():
@@ -53,10 +64,14 @@ class AgentMonitor:
         self.api_success_count = 0
         self.switched_to_install = False
         self.selected_host_id = None
+        self.seen_event_ids = set()
+        self.event_streamer_running = False
 
-        # Clear log and write startup info
+        # Clear logs and write startup info
         with open(LOG_FILE, "w") as f:
             f.write(f"Monitor started at {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
+        with open(EVENT_FILE, "w") as f:
+            f.write(f"=== Events started at {time.strftime('%Y-%m-%d %H:%M:%S')} ===\n")
         log(f"STATE_FILE: {STATE_FILE}")
         log(f"API_URL: {API_URL}")
         log(f"State file exists: {os.path.exists(STATE_FILE)}")
@@ -66,6 +81,8 @@ class AgentMonitor:
         self.setup_ui()
         # Delay first refresh until mainloop starts
         self.root.after(100, self.refresh)
+        # Start event streamer
+        self.start_event_streamer()
 
     def setup_ui(self):
         # Cluster status frame
@@ -680,6 +697,45 @@ class AgentMonitor:
                     self.details_text.insert(tk.END, f"Not eligible: {', '.join(reasons)}\n", "failure")
         except:
             pass
+
+    def start_event_streamer(self):
+        """Start background thread for fast event polling"""
+        def stream_events():
+            self.event_streamer_running = True
+            log("Event streamer started")
+            while self.event_streamer_running:
+                try:
+                    token = get_auth_token()
+                    if not token or not self.cluster_id:
+                        time.sleep(EVENT_POLL_INTERVAL)
+                        continue
+
+                    headers = {"Authorization": token}
+                    resp = requests.get(
+                        f"{API_URL}/events",
+                        params={"cluster_id": self.cluster_id},
+                        headers=headers,
+                        timeout=5,
+                        verify=False
+                    )
+
+                    if resp.status_code == 200:
+                        events = resp.json()
+                        for event in events:
+                            event_id = event.get("event_id")
+                            if event_id and event_id not in self.seen_event_ids:
+                                self.seen_event_ids.add(event_id)
+                                msg = event.get("message", "")
+                                severity = event.get("severity", "info")
+                                log_event(msg, severity)
+
+                except Exception as e:
+                    log(f"Event streamer error: {e}")
+
+                time.sleep(EVENT_POLL_INTERVAL)
+
+        thread = threading.Thread(target=stream_events, daemon=True)
+        thread.start()
 
 
 def main():
