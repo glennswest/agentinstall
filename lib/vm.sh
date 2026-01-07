@@ -72,9 +72,14 @@ erase_disk() {
     local drivepath="/dev/${LVM_VG}/${lvmname}"
 
     echo "Wiping disk for VM ${vmid}..."
-    # Use -b to verify it's a block device before wiping
-    ssh "${PVE_USER}@${PVE_HOST}" "test -b ${drivepath} && dd if=/dev/zero of=${drivepath} bs=1M count=100 2>/dev/null || echo 'Warning: ${drivepath} not a block device'"
-    echo "Disk wiped: ${lvmname}"
+    # Recreate LV to ensure clean state (handles both thick and thin provisioned)
+    ssh "${PVE_USER}@${PVE_HOST}" "
+        if lvs ${LVM_VG}/${lvmname} >/dev/null 2>&1; then
+            lvremove -f ${LVM_VG}/${lvmname} 2>/dev/null
+        fi
+        lvcreate -y -L ${DEFAULT_DISK_SIZE} -n ${lvmname} ${LVM_VG} >/dev/null 2>&1
+    " || echo "Warning: Could not recreate ${lvmname}"
+    echo "Disk recreated: ${lvmname}"
 }
 
 # Create a VM with ISO boot
