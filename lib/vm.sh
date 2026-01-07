@@ -44,12 +44,36 @@ poweron_vm() {
     ssh "${PVE_USER}@${PVE_HOST}" "qm start ${vmid}"
 }
 
-# Power off a VM
+# Power off a VM and wait until stopped
 poweroff_vm() {
     local vmid
     vmid=$(get_vmid "$1")
+    local status
+
+    # Check if already stopped
+    status=$(ssh "${PVE_USER}@${PVE_HOST}" "qm status ${vmid} 2>/dev/null | awk '{print \$2}'" 2>/dev/null)
+    if [ "$status" = "stopped" ]; then
+        echo "VM ${vmid} already stopped"
+        return 0
+    fi
+
     echo "Powering off VM ${vmid}..."
     ssh "${PVE_USER}@${PVE_HOST}" "qm stop ${vmid}" 2>/dev/null || true
+
+    # Wait for VM to actually stop (max 60 seconds)
+    local count=0
+    while [ $count -lt 60 ]; do
+        status=$(ssh "${PVE_USER}@${PVE_HOST}" "qm status ${vmid} 2>/dev/null | awk '{print \$2}'" 2>/dev/null)
+        if [ "$status" = "stopped" ]; then
+            echo "VM ${vmid} stopped"
+            return 0
+        fi
+        sleep 1
+        count=$((count + 1))
+    done
+
+    echo "WARNING: VM ${vmid} did not stop within 60 seconds"
+    return 1
 }
 
 # Create LVM disk for VM (thick provisioned, same as qpve)

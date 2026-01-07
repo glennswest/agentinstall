@@ -26,6 +26,23 @@ echo "Version: ${OCP_VERSION}"
 echo "Registry: ${LOCAL_REGISTRY}"
 echo "=========================================="
 
+# Step 0: Stop all VMs first (must complete before anything else)
+echo ""
+echo "[Step 0] Stopping all VMs..."
+for vmid in "${CONTROL_VM_IDS[@]}" "${WORKER_VM_IDS[@]}"; do
+    poweroff_vm "$vmid"
+done
+
+# Verify all VMs are stopped
+for vmid in "${CONTROL_VM_IDS[@]}" "${WORKER_VM_IDS[@]}"; do
+    status=$(ssh root@${PVE_HOST} "qm status ${vmid} 2>/dev/null | awk '{print \$2}'" 2>/dev/null)
+    if [ "$status" != "stopped" ]; then
+        echo "ERROR: VM ${vmid} is still ${status}! Cannot proceed."
+        exit 1
+    fi
+done
+echo "All VMs stopped."
+
 # Pre-flight check: Verify key registry artifacts exist
 echo ""
 echo "[Pre-flight] Checking registry artifacts..."
@@ -60,16 +77,6 @@ fi
 
 echo "Registry pre-flight checks passed."
 
-# Start VM poweroff immediately in background (gives time to shut down)
-VM_PREP_LOG=$(mktemp)
-(
-    echo "Powering off VMs..."
-    for vmid in "${CONTROL_VM_IDS[@]}" "${WORKER_VM_IDS[@]}"; do
-        poweroff_vm "$vmid" 2>/dev/null || true
-    done
-) > "$VM_PREP_LOG" 2>&1 &
-VM_POWEROFF_PID=$!
-
 # Step 1: Pull installer from local registry
 echo ""
 echo "[Step 1] Pulling openshift-install from registry..."
@@ -91,36 +98,23 @@ fi
 cp "${SCRIPT_DIR}/install-config.yaml" "${SCRIPT_DIR}/gw/install-config.yaml"
 cp "${SCRIPT_DIR}/agent-config.yaml" "${SCRIPT_DIR}/gw/"
 
-# Step 3: Create agent ISO AND prepare VMs in parallel
+# Step 3: Create agent ISO and prepare VMs
 echo ""
 echo "[Step 3] Creating agent ISO..."
 
-# Wait for VM poweroff to complete (started at script beginning)
-echo "Waiting for VMs to stop..."
-wait $VM_POWEROFF_PID
-echo "VMs stopped"
-
-# Delete old ISO from Proxmox AFTER VMs are stopped (ISO can't be deleted while in use)
+# Delete old ISO from Proxmox (VMs already stopped in Step 0)
 echo "Deleting old ISO from Proxmox..."
 ssh root@${PVE_HOST} "rm -f ${ISO_PATH}/${ISO_NAME}"
-# Verify deletion
-if ssh root@${PVE_HOST} "test -f ${ISO_PATH}/${ISO_NAME}"; then
-    echo "ERROR: Failed to delete old ISO - file still exists!"
-    echo "VMs may still be using it. Please stop VMs manually and retry."
-    exit 1
-fi
-echo "Old ISO deleted"
 
 # Start disk wipe in background (runs parallel to ISO generation)
+DISK_WIPE_LOG=$(mktemp)
 (
-    sleep 5  # Extra time for VMs to fully stop
-    echo ""
     echo "Wiping disks..."
     for vmid in "${CONTROL_VM_IDS[@]}" "${WORKER_VM_IDS[@]}"; do
         erase_disk "$vmid" || true
     done
-) >> "$VM_PREP_LOG" 2>&1 &
-VM_PREP_PID=$!
+) > "$DISK_WIPE_LOG" 2>&1 &
+DISK_WIPE_PID=$!
 
 # Generate ISO (foreground so we see progress)
 generate_iso_remote "${OCP_VERSION}" "${SCRIPT_DIR}/gw/install-config.yaml" "${SCRIPT_DIR}/gw/agent-config.yaml"
@@ -143,12 +137,12 @@ fi
 # and their presence causes conflicts with the state file during wait-for commands
 rm -f "${SCRIPT_DIR}/gw/install-config.yaml" "${SCRIPT_DIR}/gw/agent-config.yaml"
 
-# Wait for VM preparation and show output
-wait $VM_PREP_PID
+# Wait for disk wipe to complete
+wait $DISK_WIPE_PID
 echo ""
-echo "[Step 3b] VM preparation (ran in parallel):"
-cat "$VM_PREP_LOG"
-rm -f "$VM_PREP_LOG"
+echo "Disk wipe completed:"
+cat "$DISK_WIPE_LOG"
+rm -f "$DISK_WIPE_LOG"
 
 # Step 4: Setup kubeconfig
 echo ""
