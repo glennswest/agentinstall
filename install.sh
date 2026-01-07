@@ -34,6 +34,9 @@ echo "[Step 2] Preparing installation directory..."
 rm -rf "${SCRIPT_DIR}/gw"
 mkdir -p "${SCRIPT_DIR}/gw"
 
+# Clean up old ISO from Proxmox to ensure fresh generation
+ssh root@${PVE_HOST} "rm -f /var/lib/vz/template/iso/coreos-x86_64.iso" 2>/dev/null || true
+
 # Copy and prepare install-config
 if [ ! -f "${SCRIPT_DIR}/install-config.yaml" ]; then
     echo "ERROR: install-config.yaml not found!"
