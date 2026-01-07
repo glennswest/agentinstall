@@ -142,7 +142,7 @@ class AgentMonitor:
         try:
             token = get_auth_token()
             if not token:
-                return None
+                return "no_token"
             headers = {"Authorization": token}
             response = requests.get(f"{API_URL}{endpoint}", headers=headers, timeout=5, verify=False)
             if response.status_code == 200:
@@ -153,6 +153,8 @@ class AgentMonitor:
 
     def get_cluster(self):
         clusters = self.api_request("/clusters")
+        if clusters == "no_token":
+            return "no_token"
         if clusters and isinstance(clusters, list) and len(clusters) > 0:
             return clusters[0]
         return None
@@ -194,7 +196,15 @@ class AgentMonitor:
             if self.mode == "api":
                 cluster = self.get_cluster()
 
-                if cluster:
+                if cluster == "no_token":
+                    self.root.after(0, lambda: self.cluster_status.config(
+                        text="NO TOKEN",
+                        foreground="#8b7355"
+                    ))
+                    self.root.after(0, lambda: self.status_label.config(
+                        text="Waiting for state file..."
+                    ))
+                elif cluster:
                     self.api_fail_count = 0
                     self.cluster_id = cluster.get("id")
                     status = cluster.get("status", "unknown")
