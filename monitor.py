@@ -233,6 +233,7 @@ class AgentMonitor:
                     self.root.after(0, lambda: self.status_label.config(
                         text=f"Last update: {time.strftime('%H:%M:%S')}"
                     ))
+                    self.root.after(0, lambda: self.root.update_idletasks())
                 else:
                     self.api_fail_count += 1
                     # After 3 failures, switch to oc mode

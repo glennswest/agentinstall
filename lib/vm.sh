@@ -104,7 +104,7 @@ create_vm_iso() {
         --memory ${memory} \
         --net0 bridge=${NETWORK_BRIDGE},virtio=${mac} \
         --ide2 local:iso/${ISO_NAME},media=cdrom \
-        --bootdisk scsi0 \
+        --boot order=ide2\;scsi0 \
         --scsihw virtio-scsi-single \
         --scsi0 ${LVM_STORAGE}:${lvmname},size=${disksize}"
 }

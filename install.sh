@@ -73,6 +73,10 @@ else
     upload_iso "${SCRIPT_DIR}/gw/agent.x86_64.iso"
 fi
 
+# Remove config files from gw directory - they're consumed during ISO generation
+# and their presence causes conflicts with the state file during wait-for commands
+rm -f "${SCRIPT_DIR}/gw/install-config.yaml" "${SCRIPT_DIR}/gw/agent-config.yaml"
+
 # Wait for VM preparation and show output
 wait $VM_PREP_PID
 echo ""
