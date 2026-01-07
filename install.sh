@@ -116,9 +116,9 @@ done
 echo "Verifying disks are wiped..."
 for vmid in "${CONTROL_VM_IDS[@]}" "${WORKER_VM_IDS[@]}"; do
     lvmname="vm-${vmid}-disk-0"
-    # Check if disk has any boot signature
-    has_data=$(ssh root@${PVE_HOST} "dd if=/dev/${LVM_VG}/${lvmname} bs=512 count=1 2>/dev/null | od -A n -t x1 | tr -d ' \n' | grep -v '^0*$'" 2>/dev/null || true)
-    if [ -n "$has_data" ]; then
+    # Check if disk has any non-zero bytes in first 512 bytes
+    nonzero=$(ssh root@${PVE_HOST} "dd if=/dev/${LVM_VG}/${lvmname} bs=512 count=1 2>/dev/null | xxd -p | tr -d '\n' | sed 's/0//g'" 2>/dev/null || true)
+    if [ -n "$nonzero" ]; then
         echo "ERROR: Disk ${lvmname} still has data! Wipe failed."
         exit 1
     fi
