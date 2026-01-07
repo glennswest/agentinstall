@@ -163,9 +163,38 @@ generate_iso_remote() {
     echo "Running openshift-install on registry server..."
     ssh $SSH_OPTS "root@${registry_host}" "cd ${remote_dir} && ${cache_dir}/openshift-install-${version} agent create image"
 
+    # Verify base ISO in cache matches expected checksum
+    echo "Verifying base ISO checksum..."
+    local base_iso_ok
+    base_iso_ok=$(ssh $SSH_OPTS "root@${registry_host}" '
+        EXPECTED=$(python3 -c "import json; d=json.load(open(\"/root/.cache/agent/files_cache/coreos-stream.json\")); print(d[\"architectures\"][\"x86_64\"][\"artifacts\"][\"metal\"][\"formats\"][\"iso\"][\"disk\"][\"sha256\"])")
+        ACTUAL=$(sha256sum /root/.cache/agent/image_cache/coreos-x86_64.iso | cut -d" " -f1)
+        if [ "$EXPECTED" = "$ACTUAL" ]; then
+            echo "OK"
+        else
+            echo "MISMATCH: expected $EXPECTED, got $ACTUAL"
+        fi
+    ')
+    if [[ "$base_iso_ok" != "OK" ]]; then
+        echo "ERROR: Base ISO checksum mismatch!"
+        echo "$base_iso_ok"
+        return 1
+    fi
+    echo "Base ISO checksum verified: OK"
+
     # Copy ISO directly to Proxmox (local network, fast)
     echo "Copying ISO to Proxmox..."
     ssh $SSH_OPTS "root@${registry_host}" "scp -O -o StrictHostKeyChecking=no ${remote_dir}/agent.x86_64.iso ${PVE_USER}@${PVE_HOST}:${ISO_PATH}/${ISO_NAME}"
+
+    # Verify ISO was copied successfully
+    echo "Verifying ISO on Proxmox..."
+    local pve_iso_size
+    pve_iso_size=$(ssh $SSH_OPTS "${PVE_USER}@${PVE_HOST}" "stat -c%s ${ISO_PATH}/${ISO_NAME} 2>/dev/null || echo 0")
+    if [ "$pve_iso_size" -lt 1000000000 ]; then
+        echo "ERROR: ISO on Proxmox is too small (${pve_iso_size} bytes), expected >1GB"
+        return 1
+    fi
+    echo "ISO on Proxmox verified: ${pve_iso_size} bytes"
 
     # Copy all generated files back to local machine (needed for wait-for commands)
     echo "Retrieving generated assets..."

@@ -707,6 +707,7 @@ class AgentMonitor:
                 try:
                     token = get_auth_token()
                     if not token or not self.cluster_id:
+                        log(f"Event streamer waiting: token={bool(token)}, cluster_id={self.cluster_id}")
                         time.sleep(EVENT_POLL_INTERVAL)
                         continue
 
@@ -721,6 +722,7 @@ class AgentMonitor:
 
                     if resp.status_code == 200:
                         events = resp.json()
+                        new_count = 0
                         for event in events:
                             event_id = event.get("event_id")
                             if event_id and event_id not in self.seen_event_ids:
@@ -728,6 +730,11 @@ class AgentMonitor:
                                 msg = event.get("message", "")
                                 severity = event.get("severity", "info")
                                 log_event(msg, severity)
+                                new_count += 1
+                        if new_count > 0:
+                            log(f"Event streamer: {new_count} new events")
+                    else:
+                        log(f"Event streamer: API returned {resp.status_code}")
 
                 except Exception as e:
                     log(f"Event streamer error: {e}")

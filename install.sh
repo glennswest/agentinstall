@@ -105,7 +105,16 @@ mkdir -p "${KUBECONFIG_DIR}"
 rm -f "${KUBECONFIG_DIR}/config"
 cp "${SCRIPT_DIR}/gw/auth/kubeconfig" "${KUBECONFIG_DIR}/config"
 
-# Step 5: Power on all nodes
+# Step 5: Verify ISO and power on all nodes
+echo ""
+echo "[Step 5] Verifying ISO before starting nodes..."
+ISO_SIZE=$(ssh root@${PVE_HOST} "stat -c%s ${ISO_PATH}/${ISO_NAME} 2>/dev/null || echo 0")
+if [ "$ISO_SIZE" -lt 1000000000 ]; then
+    echo "ERROR: ISO missing or too small on Proxmox (${ISO_SIZE} bytes)"
+    exit 1
+fi
+echo "ISO verified: ${ISO_SIZE} bytes on ${PVE_HOST}"
+
 echo ""
 echo "[Step 5] Starting all nodes..."
 for vmid in "${CONTROL_VM_IDS[@]}" "${WORKER_VM_IDS[@]}"; do
