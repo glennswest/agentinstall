@@ -61,14 +61,16 @@ cp "${SCRIPT_DIR}/agent-config.yaml" "${SCRIPT_DIR}/gw/"
 echo ""
 echo "[Step 3] Creating agent ISO..."
 
-# Wait for VM poweroff to complete, then wipe disks in background
+# Wait for VM poweroff to complete (started at script beginning)
+wait $VM_POWEROFF_PID
+
+# Start disk wipe in background (runs parallel to ISO generation)
 (
-    wait $VM_POWEROFF_PID
     sleep 5  # Extra time for VMs to fully stop
     echo ""
     echo "Wiping disks..."
     for vmid in "${CONTROL_VM_IDS[@]}" "${WORKER_VM_IDS[@]}"; do
-        erase_disk "$vmid"
+        erase_disk "$vmid" || true
     done
 ) >> "$VM_PREP_LOG" 2>&1 &
 VM_PREP_PID=$!
