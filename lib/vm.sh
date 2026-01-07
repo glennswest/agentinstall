@@ -36,6 +36,14 @@ get_disktype() {
     fi
 }
 
+# Attach ISO to a VM
+attach_iso() {
+    local vmid
+    vmid=$(get_vmid "$1")
+    echo "Attaching ISO to VM ${vmid}..."
+    ssh "${PVE_USER}@${PVE_HOST}" "qm set ${vmid} --ide2 local:iso/${ISO_NAME},media=cdrom"
+}
+
 # Power on a VM
 poweron_vm() {
     local vmid

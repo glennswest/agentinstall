@@ -106,15 +106,25 @@ echo "[Step 3] Creating agent ISO..."
 echo "Deleting old ISO from Proxmox..."
 ssh root@${PVE_HOST} "rm -f ${ISO_PATH}/${ISO_NAME}"
 
-# Start disk wipe in background (runs parallel to ISO generation)
-DISK_WIPE_LOG=$(mktemp)
-(
-    echo "Wiping disks..."
-    for vmid in "${CONTROL_VM_IDS[@]}" "${WORKER_VM_IDS[@]}"; do
-        erase_disk "$vmid" || true
-    done
-) > "$DISK_WIPE_LOG" 2>&1 &
-DISK_WIPE_PID=$!
+# Wipe all disks (must complete before ISO generation to ensure clean state)
+echo "Wiping disks..."
+for vmid in "${CONTROL_VM_IDS[@]}" "${WORKER_VM_IDS[@]}"; do
+    erase_disk "$vmid"
+done
+
+# Verify all disks are wiped (check first 512 bytes are zero - no MBR/GPT)
+echo "Verifying disks are wiped..."
+for vmid in "${CONTROL_VM_IDS[@]}" "${WORKER_VM_IDS[@]}"; do
+    lvmname="vm-${vmid}-disk-0"
+    # Check if disk has any boot signature
+    has_data=$(ssh root@${PVE_HOST} "dd if=/dev/${LVM_VG}/${lvmname} bs=512 count=1 2>/dev/null | od -A n -t x1 | tr -d ' \n' | grep -v '^0*$'" 2>/dev/null || true)
+    if [ -n "$has_data" ]; then
+        echo "ERROR: Disk ${lvmname} still has data! Wipe failed."
+        exit 1
+    fi
+    echo "  ${lvmname}: clean"
+done
+echo "All disks verified clean."
 
 # Generate ISO (foreground so we see progress)
 generate_iso_remote "${OCP_VERSION}" "${SCRIPT_DIR}/gw/install-config.yaml" "${SCRIPT_DIR}/gw/agent-config.yaml"
@@ -137,12 +147,6 @@ fi
 # and their presence causes conflicts with the state file during wait-for commands
 rm -f "${SCRIPT_DIR}/gw/install-config.yaml" "${SCRIPT_DIR}/gw/agent-config.yaml"
 
-# Wait for disk wipe to complete
-wait $DISK_WIPE_PID
-echo ""
-echo "Disk wipe completed:"
-cat "$DISK_WIPE_LOG"
-rm -f "$DISK_WIPE_LOG"
 
 # Step 4: Setup kubeconfig
 echo ""
@@ -180,7 +184,23 @@ else
 fi
 
 echo ""
-echo "[Step 5] Starting all nodes..."
+echo "[Step 5] Attaching ISO and starting all nodes..."
+for vmid in "${CONTROL_VM_IDS[@]}" "${WORKER_VM_IDS[@]}"; do
+    attach_iso "$vmid"
+done
+
+# Verify ISO is attached to all VMs
+echo "Verifying ISO attachment..."
+for vmid in "${CONTROL_VM_IDS[@]}" "${WORKER_VM_IDS[@]}"; do
+    ide2=$(ssh root@${PVE_HOST} "qm config ${vmid} | grep ide2")
+    if ! echo "$ide2" | grep -q "${ISO_NAME}"; then
+        echo "ERROR: ISO not attached to VM ${vmid}!"
+        echo "  Got: $ide2"
+        exit 1
+    fi
+    echo "  VM ${vmid}: ISO attached"
+done
+
 for vmid in "${CONTROL_VM_IDS[@]}" "${WORKER_VM_IDS[@]}"; do
     poweron_vm "$vmid"
 done
