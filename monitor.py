@@ -50,7 +50,9 @@ class AgentMonitor:
         self.infra_env_id = None
         self.mode = "api"  # "api" or "oc"
         self.api_fail_count = 0
+        self.api_success_count = 0
         self.switched_to_install = False
+        self.selected_host_id = None
 
         # Clear log and write startup info
         with open(LOG_FILE, "w") as f:
@@ -230,6 +232,7 @@ class AgentMonitor:
                     ))
                 elif cluster:
                     self.api_fail_count = 0
+                    self.api_success_count += 1
                     self.cluster_id = cluster.get("id")
                     status = cluster.get("status", "unknown")
                     status_info = cluster.get("status_info", "")
@@ -272,9 +275,11 @@ class AgentMonitor:
                     self.root.after(0, lambda: self.root.update_idletasks())
                 else:
                     self.api_fail_count += 1
-                    # After 3 failures, switch to oc mode
-                    if self.api_fail_count >= 3:
+                    # Only switch to oc mode if API was working before (bootstrap complete)
+                    # api_success_count > 0 means we connected at least once
+                    if self.api_fail_count >= 3 and self.api_success_count > 5:
                         self.mode = "oc"
+                        log("Switching to oc mode (API was up, now down = bootstrap complete)")
                         self.root.after(0, lambda: self.cluster_info.config(
                             text="Switched to cluster monitoring (bootstrap complete)"
                         ))
@@ -284,7 +289,7 @@ class AgentMonitor:
                             foreground="#8b7355"
                         ))
                         self.root.after(0, lambda: self.status_label.config(
-                            text="Waiting on API..."
+                            text=f"Waiting on API... ({self.api_fail_count})"
                         ))
 
             if self.mode == "oc":
@@ -449,6 +454,18 @@ class AgentMonitor:
             # Store for details
             self.hosts_data[host_id] = host
 
+        # Auto-select first host if none selected, or re-select previously selected
+        children = self.hosts_tree.get_children()
+        if children:
+            if self.selected_host_id and self.selected_host_id in children:
+                self.hosts_tree.selection_set(self.selected_host_id)
+                self.show_host_details(self.selected_host_id)
+            elif not self.selected_host_id:
+                # Select first host by default
+                self.selected_host_id = children[0]
+                self.hosts_tree.selection_set(self.selected_host_id)
+                self.show_host_details(self.selected_host_id)
+
     def update_install_log(self, events):
         """Update installation event log"""
         self.install_text.delete("1.0", tk.END)
@@ -606,8 +623,12 @@ class AgentMonitor:
         selection = self.hosts_tree.selection()
         if not selection:
             return
-
         host_id = selection[0]
+        self.selected_host_id = host_id
+        self.show_host_details(host_id)
+
+    def show_host_details(self, host_id):
+        """Show validation details for a host"""
         host = self.hosts_data.get(host_id)
         if not host:
             return
@@ -615,7 +636,8 @@ class AgentMonitor:
         self.details_text.delete("1.0", tk.END)
 
         hostname = host.get("requested_hostname", "unknown")
-        self.details_text.insert(tk.END, f"=== {hostname} ===\n\n")
+        status = host.get("status", "unknown")
+        self.details_text.insert(tk.END, f"=== {hostname} ({status}) ===\n\n")
 
         # Parse validations
         try:
