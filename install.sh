@@ -23,6 +23,16 @@ echo "Version: ${OCP_VERSION}"
 echo "Registry: ${LOCAL_REGISTRY}"
 echo "=========================================="
 
+# Start VM poweroff immediately in background (gives time to shut down)
+VM_PREP_LOG=$(mktemp)
+(
+    echo "Powering off VMs..."
+    for vmid in "${CONTROL_VM_IDS[@]}" "${WORKER_VM_IDS[@]}"; do
+        poweroff_vm "$vmid" 2>/dev/null || true
+    done
+) > "$VM_PREP_LOG" 2>&1 &
+VM_POWEROFF_PID=$!
+
 # Step 1: Pull installer from local registry
 echo ""
 echo "[Step 1] Pulling openshift-install from registry..."
@@ -51,17 +61,16 @@ cp "${SCRIPT_DIR}/agent-config.yaml" "${SCRIPT_DIR}/gw/"
 echo ""
 echo "[Step 3] Creating agent ISO..."
 
-# Start VM preparation in background (output to temp log)
-VM_PREP_LOG=$(mktemp)
+# Wait for VM poweroff to complete, then wipe disks in background
 (
+    wait $VM_POWEROFF_PID
+    sleep 5  # Extra time for VMs to fully stop
+    echo ""
+    echo "Wiping disks..."
     for vmid in "${CONTROL_VM_IDS[@]}" "${WORKER_VM_IDS[@]}"; do
-        poweroff_vm "$vmid" 2>/dev/null || true
+        erase_disk "$vmid"
     done
-    sleep 3
-    for vmid in "${CONTROL_VM_IDS[@]}" "${WORKER_VM_IDS[@]}"; do
-        erase_disk "$vmid" 2>/dev/null || true
-    done
-) > "$VM_PREP_LOG" 2>&1 &
+) >> "$VM_PREP_LOG" 2>&1 &
 VM_PREP_PID=$!
 
 # Generate ISO (foreground so we see progress)
