@@ -250,6 +250,18 @@ class AgentMonitor:
     def get_events(self, cluster_id):
         return self.api_request(f"/events?cluster_id={cluster_id}") or []
 
+    def kube_api_reachable(self):
+        """Check if kube API port is reachable (fast TCP check)"""
+        import socket
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(1)
+            result = sock.connect_ex(('api.gw.lo', 6443))
+            sock.close()
+            return result == 0
+        except:
+            return False
+
     def get_oc_nodes(self):
         """Get nodes via oc command"""
         try:
@@ -330,10 +342,10 @@ class AgentMonitor:
                         events = self.get_events(self.cluster_id)
                         self.root.after(0, lambda e=events: self.update_install_log(e))
 
-                    # Switch to oc mode when cluster is installed or finalizing
-                    if status in ("installed", "finalizing") and self.api_success_count > 5:
+                    # Switch to oc mode when kube API is reachable
+                    if self.kube_api_reachable():
                         self.mode = "oc"
-                        log(f"Switching to oc mode (cluster status={status})")
+                        log("Switching to oc mode (kube API reachable)")
 
                     self.root.after(0, lambda: self.status_label.config(
                         text=f"Last update: {time.strftime('%H:%M:%S')}"
