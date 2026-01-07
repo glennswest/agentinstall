@@ -42,7 +42,8 @@ class AgentMonitor:
         self.api_fail_count = 0
 
         self.setup_ui()
-        self.refresh()
+        # Delay first refresh until mainloop starts
+        self.root.after(100, self.refresh)
 
     def setup_ui(self):
         # Cluster status frame
