@@ -20,13 +20,23 @@ API_URL = "http://192.168.1.201:8090/api/assisted-install/v2"
 REFRESH_INTERVAL = 5000  # ms
 
 
+LOG_FILE = "/tmp/monitor-debug.log"
+
+def log(msg):
+    """Debug logging to file"""
+    with open(LOG_FILE, "a") as f:
+        f.write(f"[{time.strftime('%H:%M:%S')}] {msg}\n")
+        f.flush()
+
 def get_auth_token():
     """Read auth token from state file"""
     try:
         with open(STATE_FILE, 'r') as f:
             state = json.load(f)
-            return state.get("*gencrypto.AuthConfig", {}).get("UserAuthToken", "")
-    except:
+            token = state.get("*gencrypto.AuthConfig", {}).get("UserAuthToken", "")
+            return token
+    except Exception as e:
+        log(f"Token error: {e}")
         return ""
 
 
@@ -40,6 +50,16 @@ class AgentMonitor:
         self.infra_env_id = None
         self.mode = "api"  # "api" or "oc"
         self.api_fail_count = 0
+        self.switched_to_install = False
+
+        # Clear log and write startup info
+        with open(LOG_FILE, "w") as f:
+            f.write(f"Monitor started at {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
+        log(f"STATE_FILE: {STATE_FILE}")
+        log(f"API_URL: {API_URL}")
+        log(f"State file exists: {os.path.exists(STATE_FILE)}")
+        token = get_auth_token()
+        log(f"Token available: {bool(token)}")
 
         self.setup_ui()
         # Delay first refresh until mainloop starts
@@ -142,13 +162,16 @@ class AgentMonitor:
         try:
             token = get_auth_token()
             if not token:
+                log(f"API {endpoint}: no token")
                 return "no_token"
             headers = {"Authorization": token}
             response = requests.get(f"{API_URL}{endpoint}", headers=headers, timeout=5, verify=False)
+            log(f"API {endpoint}: {response.status_code}")
             if response.status_code == 200:
                 return response.json()
             return None
         except Exception as e:
+            log(f"API {endpoint}: error {e}")
             return None
 
     def get_cluster(self):
@@ -192,6 +215,7 @@ class AgentMonitor:
         return []
 
     def refresh(self):
+        log(f"Refresh called, mode={self.mode}")
         def do_refresh():
             if self.mode == "api":
                 cluster = self.get_cluster()
@@ -218,11 +242,12 @@ class AgentMonitor:
                     else:
                         status_text = status.upper()
 
+                    log(f"Updating GUI: status={status_text}")
                     self.root.after(0, lambda t=status_text, s=status: self.cluster_status.config(
                         text=t,
                         foreground=self.status_color(s)
                     ))
-                    self.root.after(0, lambda: self.cluster_info.config(text=status_info))
+                    self.root.after(0, lambda si=status_info: self.cluster_info.config(text=si))
 
                     # Update progress bar
                     self.root.after(0, lambda p=total_pct: self.progress_bar.config(value=p))
