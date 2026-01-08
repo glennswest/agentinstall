@@ -218,5 +218,5 @@ To use this fix:
 
 ## Related Issues
 
-- OCPBUGS-5988: RBAC bug (existing 1-minute reboot delay in the installer addresses this)
-- This fix addresses a different timing issue with MCO annotations becoming stale
+- This fix addresses a timing issue where MCO annotations become stale before the rendezvous host reboots
+- The existing 1-minute reboot delay (for OCPBUGS-5988 RBAC bug) does not prevent this issue
