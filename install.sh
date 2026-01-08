@@ -221,6 +221,25 @@ disown 2>/dev/null || true
 echo ""
 echo "[Step 6] Waiting for bootstrap to complete..."
 
+# Start background task to hold control0 as soon as API is reachable
+CONTROL0_HOSTNAME="control0.gw.lo"
+(
+    echo "  [Background] Waiting for API to hold control0..."
+    for i in {1..120}; do
+        if curl -sk --connect-timeout 2 https://api.gw.lo:6443/healthz &>/dev/null; then
+            sleep 10  # Give MCO a moment to create rendered configs
+            CURRENT_RENDERED=$(oc get mc -o name 2>/dev/null | grep rendered-master | head -1 | sed 's|machineconfig.machineconfiguration.openshift.io/||')
+            if [ -n "$CURRENT_RENDERED" ]; then
+                if oc get node "$CONTROL0_HOSTNAME" &>/dev/null; then
+                    oc patch node "$CONTROL0_HOSTNAME" --type merge -p "{\"metadata\":{\"annotations\":{\"machineconfiguration.openshift.io/desiredConfig\":\"${CURRENT_RENDERED}\",\"machineconfiguration.openshift.io/currentConfig\":\"${CURRENT_RENDERED}\",\"machineconfiguration.openshift.io/state\":\"Done\",\"machineconfiguration.openshift.io/reason\":\"\"}}}" 2>/dev/null && echo "  [Background] control0 held (state=Done)" && break
+                fi
+            fi
+        fi
+        sleep 10
+    done
+) &
+HOLD_PID=$!
+
 # Check for kube-apiserver crash loop (bad ISO detection)
 echo "Checking for bootkube health..."
 KUBE_ERROR_COUNT=0
@@ -250,19 +269,9 @@ else
     openshift-install --dir="${SCRIPT_DIR}/gw" agent wait-for bootstrap-complete
 fi
 
-# Step 6.5: Hold control0 while control1/control2 stabilize
+# Step 6.5: Wait for control1/control2 to stabilize (control0 hold started in background earlier)
 echo ""
-echo "[Step 6.5] Holding control0 to let control1/control2 stabilize..."
-CONTROL0_HOSTNAME="control0.gw.lo"
-for i in {1..30}; do
-    CURRENT_RENDERED=$(oc get mc -o name 2>/dev/null | grep rendered-master | head -1 | sed 's|machineconfig.machineconfiguration.openshift.io/||')
-    if [ -n "$CURRENT_RENDERED" ]; then
-        if oc get node "$CONTROL0_HOSTNAME" &>/dev/null; then
-            oc patch node "$CONTROL0_HOSTNAME" --type merge -p "{\"metadata\":{\"annotations\":{\"machineconfiguration.openshift.io/desiredConfig\":\"${CURRENT_RENDERED}\",\"machineconfiguration.openshift.io/currentConfig\":\"${CURRENT_RENDERED}\",\"machineconfiguration.openshift.io/state\":\"Done\",\"machineconfiguration.openshift.io/reason\":\"\"}}}" 2>/dev/null && echo "  control0 held (state=Done)" && break
-        fi
-    fi
-    sleep 5
-done
+echo "[Step 6.5] Waiting for control plane to stabilize..."
 
 # Wait for control1/control2 to be Ready
 echo "Waiting for control1/control2 to be Ready..."
