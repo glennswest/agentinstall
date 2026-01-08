@@ -1,5 +1,9 @@
 # Fix: Stale MachineConfig Annotation Deadlock in Agent-Based Installer
 
+## Status: TESTED AND VERIFIED
+
+Successfully tested on 2026-01-08 with OpenShift 4.18.30. The fix prevents the stale MC annotation deadlock and allows the installation to complete successfully.
+
 ## Problem Description
 
 During agent-based OpenShift installations, the bootstrap node—also known as the **rendezvous host** (control0)—can reboot before the other control plane nodes (control1, control2) have consistent MachineConfig annotations. This creates a deadlock situation:
@@ -39,20 +43,147 @@ Add a new check before the rendezvous host reboots that verifies all master node
 ### Changes Made
 
 1. **New method `GetMachineConfig(name)`** in K8SClient interface to fetch MachineConfig objects
-2. **New function `waitForMCAnnotationsConsistent()`** that:
+
+2. **Fixed `runtimeClient` initialization bug** - The original code only initialized `runtimeClient` when `configPath == ""`, but agent-based installs pass a kubeconfig path, leaving `runtimeClient` nil and causing a panic when `GetMachineConfig()` was called
+
+3. **New function `waitForMCAnnotationsConsistent()`** that:
    - Lists all master nodes
    - For each node, reads `currentConfig` and `desiredConfig` annotations
    - Verifies each referenced MachineConfig actually exists in the cluster
    - Waits until all annotations are consistent
-3. **Call the new function** in the bootstrap path, after `waitForWorkers()` and before `finalize()` (reboot)
+
+4. **Call the new function** in the bootstrap path, after `waitForWorkers()` and before `finalize()` (reboot)
+
+5. **Added `HighAvailabilityMode` flag** - Required by OCP builds but missing in upstream
 
 ## Files Modified
 
-- `src/k8s_client/k8s_client.go` - Added `GetMachineConfig()` interface method and implementation
+- `src/k8s_client/k8s_client.go` - Added `GetMachineConfig()` interface method, implementation, and **fixed runtimeClient initialization**
 - `src/k8s_client/mock_k8s_client.go` - Added mock for testing
 - `src/installer/installer.go` - Added `waitForMCAnnotationsConsistent()` and integrated into bootstrap flow
+- `src/config/config.go` - Added `HighAvailabilityMode` field and flag
 
 ## Diff
+
+### src/config/config.go
+
+```diff
+diff --git a/src/config/config.go b/src/config/config.go
+index cc38179..a9a9bc5 100644
+--- a/src/config/config.go
++++ b/src/config/config.go
+@@ -41,6 +41,7 @@ type Config struct {
+ 	EnableSkipMcoReboot         bool
+ 	NotifyNumReboots            bool
+ 	CoreosImage                 string
++	HighAvailabilityMode        string
+ }
+
+ func printHelpAndExit(err error) {
+@@ -81,6 +82,7 @@ func (c *Config) ProcessArgs(args []string) {
+ 	flagSet.BoolVar(&c.EnableSkipMcoReboot, "enable-skip-mco-reboot", false, "indicate assisted installer to generate settings to match MCO requirements for skipping reboot after firstboot")
+ 	flagSet.BoolVar(&c.NotifyNumReboots, "notify-num-reboots", false, "indicate number of reboots should be notified as event")
+ 	flagSet.StringVar(&c.CoreosImage, "coreos-image", "", "CoreOS image to install to the existing root")
++	flagSet.StringVar(&c.HighAvailabilityMode, "high-availability-mode", "", "high-availability expectations, \"Full\" which represents the behavior in a \"normal\" cluster. Use 'None' for single-node deployment. Leave this value as \"\" for workers as we do not care about HA mode for workers.")
+
+ 	var installerArgs string
+ 	flagSet.StringVar(&installerArgs, "installer-args", "", "JSON array of additional coreos-installer arguments")
+```
+
+### src/k8s_client/k8s_client.go
+
+```diff
+diff --git a/src/k8s_client/k8s_client.go b/src/k8s_client/k8s_client.go
+index 584fda6..5862ea7 100644
+--- a/src/k8s_client/k8s_client.go
++++ b/src/k8s_client/k8s_client.go
+@@ -38,7 +38,6 @@ import (
+ 	certificatesClient "k8s.io/client-go/kubernetes/typed/certificates/v1"
+ 	"k8s.io/client-go/tools/clientcmd"
+ 	runtimeclient "sigs.k8s.io/controller-runtime/pkg/client"
+-	runtimeconfig "sigs.k8s.io/controller-runtime/pkg/client/config"
+
+ 	"github.com/openshift/assisted-installer/src/ops"
+ 	"github.com/openshift/assisted-installer/src/utils"
+@@ -89,6 +88,7 @@ type K8SClient interface {
+ 	IsClusterCapabilityEnabled(configv1.ClusterVersionCapability) (bool, error)
+ 	UntaintNode(name string) error
+ 	PatchMachineConfigPoolPaused(pause bool, mcpName string) error
++	GetMachineConfig(name string) (*mcfgv1.MachineConfig, error)
+ }
+
+ type K8SClientBuilder func(configPath string, logger logrus.FieldLogger) (K8SClient, error)
+@@ -133,32 +133,31 @@ func NewK8SClient(configPath string, logger logrus.FieldLogger) (K8SClient, erro
+ 	if err != nil {
+ 		return &k8sClient{}, errors.Wrap(err, "creating openshift config client")
+ 	}
+-	var runtimeClient runtimeclient.Client
+-	if configPath == "" {
+-		scheme := runtime.NewScheme()
+-		err = clientgoscheme.AddToScheme(scheme)
+-		if err != nil {
+-			return &k8sClient{}, errors.Wrap(err, "failed to add scheme to")
+-		}
++	// Always create runtime client with full scheme support
++	scheme := runtime.NewScheme()
++	err = clientgoscheme.AddToScheme(scheme)
++	if err != nil {
++		return &k8sClient{}, errors.Wrap(err, "failed to add scheme to")
++	}
+
+-		err = metal3v1alpha1.AddToScheme(scheme)
+-		if err != nil {
+-			return &k8sClient{}, errors.Wrap(err, "failed to add BMH scheme")
+-		}
+-		err = machinev1beta1.AddToScheme(scheme)
+-		if err != nil {
+-			return &k8sClient{}, errors.Wrap(err, "failed to add Machine scheme")
+-		}
++	err = metal3v1alpha1.AddToScheme(scheme)
++	if err != nil {
++		return &k8sClient{}, errors.Wrap(err, "failed to add BMH scheme")
++	}
++	err = machinev1beta1.AddToScheme(scheme)
++	if err != nil {
++		return &k8sClient{}, errors.Wrap(err, "failed to add Machine scheme")
++	}
+
+-		err = mcfgv1.AddToScheme(scheme)
+-		if err != nil {
+-			return &k8sClient{}, errors.Wrap(err, "failed to add MCP scheme")
+-		}
++	err = mcfgv1.AddToScheme(scheme)
++	if err != nil {
++		return &k8sClient{}, errors.Wrap(err, "failed to add MCP scheme")
++	}
+
+-		runtimeClient, err = runtimeclient.New(runtimeconfig.GetConfigOrDie(), runtimeclient.Options{Scheme: scheme})
+-		if err != nil {
+-			return &k8sClient{}, errors.Wrap(err, "failed to create runtime client")
+-		}
++	// Use the config we already loaded (works with both in-cluster and kubeconfig)
++	runtimeClient, err := runtimeclient.New(config, runtimeclient.Options{Scheme: scheme})
++	if err != nil {
++		return &k8sClient{}, errors.Wrap(err, "failed to create runtime client")
+ 	}
+
+ 	return &k8sClient{logger, client, ocClient, csvClient, runtimeClient, csrClient,
+@@ -713,3 +712,12 @@ func (c *k8sClient) PatchMachineConfigPoolPaused(pause bool, mcpName string) err
+ 	c.log.Infof("Setting pause MCP %s to %t", mcpName, pause)
+ 	return c.runtimeClient.Patch(context.TODO(), mcp, runtimeclient.RawPatch(types.MergePatchType, pausePatch))
+ }
++
++func (c *k8sClient) GetMachineConfig(name string) (*mcfgv1.MachineConfig, error) {
++	mc := &mcfgv1.MachineConfig{}
++	err := c.runtimeClient.Get(context.TODO(), types.NamespacedName{Name: name}, mc)
++	if err != nil {
++		return nil, err
++	}
++	return mc, nil
++}
+```
+
+### src/installer/installer.go
 
 ```diff
 diff --git a/src/installer/installer.go b/src/installer/installer.go
@@ -138,31 +269,11 @@ index 22fd20d..b428534 100644
  func (i *installer) getInventoryHostsMap(hostsMap map[string]inventory_client.HostData) (map[string]inventory_client.HostData, error) {
  	var err error
  	if hostsMap == nil {
-diff --git a/src/k8s_client/k8s_client.go b/src/k8s_client/k8s_client.go
-index 584fda6..b0913bb 100644
---- a/src/k8s_client/k8s_client.go
-+++ b/src/k8s_client/k8s_client.go
-@@ -89,6 +89,7 @@ type K8SClient interface {
- 	IsClusterCapabilityEnabled(configv1.ClusterVersionCapability) (bool, error)
- 	UntaintNode(name string) error
- 	PatchMachineConfigPoolPaused(pause bool, mcpName string) error
-+	GetMachineConfig(name string) (*mcfgv1.MachineConfig, error)
- }
+```
 
- type K8SClientBuilder func(configPath string, logger logrus.FieldLogger) (K8SClient, error)
-@@ -713,3 +714,12 @@ func (c *k8sClient) PatchMachineConfigPoolPaused(pause bool, mcpName string) err
- 	c.log.Infof("Setting pause MCP %s to %t", mcpName, pause)
- 	return c.runtimeClient.Patch(context.TODO(), mcp, runtimeclient.RawPatch(types.MergePatchType, pausePatch))
- }
-+
-+func (c *k8sClient) GetMachineConfig(name string) (*mcfgv1.MachineConfig, error) {
-+	mc := &mcfgv1.MachineConfig{}
-+	err := c.runtimeClient.Get(context.TODO(), types.NamespacedName{Name: name}, mc)
-+	if err != nil {
-+		return nil, err
-+	}
-+	return mc, nil
-+}
+### src/k8s_client/mock_k8s_client.go
+
+```diff
 diff --git a/src/k8s_client/mock_k8s_client.go b/src/k8s_client/mock_k8s_client.go
 index b27a5b2..9534009 100644
 --- a/src/k8s_client/mock_k8s_client.go
@@ -203,20 +314,45 @@ index b27a5b2..9534009 100644
 
 To use this fix:
 
-1. Build the patched image:
+1. Build the patched image (note: use `agent-installer-orchestrator` for agent-based installs):
    ```bash
    cd upstream/assisted-installer
-   podman build --platform linux/amd64 -f Dockerfile.assisted-installer . -t registry.gw.lo/openshift/release:baremetal-installer
+   podman build --platform linux/amd64 -f Dockerfile.assisted-installer . \
+     -t registry.gw.lo/openshift/release:agent-installer-orchestrator \
+     --label "io.openshift.release.operator=true"
    ```
 
 2. Push to local registry:
    ```bash
-   podman push --tls-verify=false registry.gw.lo/openshift/release:baremetal-installer
+   podman push --tls-verify=false registry.gw.lo/openshift/release:agent-installer-orchestrator
    ```
 
-3. The next agent-based install will use the patched installer automatically.
+3. Create a new release with the patched orchestrator (run on registry host):
+   ```bash
+   oc adm release new \
+     --from-release=registry.gw.lo/openshift/release:4.18.30-x86_64 \
+     --to-image=registry.gw.lo/openshift/release:4.18.30-x86_64 \
+     --insecure=true \
+     agent-installer-orchestrator=registry.gw.lo/openshift/release:agent-installer-orchestrator
+   ```
+
+4. Re-extract openshift-install from the new release:
+   ```bash
+   oc adm release extract --command=openshift-install \
+     --to=/var/lib/openshift-cache \
+     registry.gw.lo/openshift/release:4.18.30-x86_64 --insecure=true
+   ```
+
+5. The next agent-based install will use the patched orchestrator.
+
+## Important Notes
+
+- **Component name**: Agent-based installs use `agent-installer-orchestrator`, NOT `baremetal-installer` (which is for IPI installs)
+- Both are built from the same repo (`assisted-installer`) using different Dockerfiles
+- The release image embeds the digest, so you must re-extract `openshift-install` after creating a new release
 
 ## Related Issues
 
 - This fix addresses a timing issue where MCO annotations become stale before the rendezvous host reboots
 - The existing 1-minute reboot delay (for OCPBUGS-5988 RBAC bug) does not prevent this issue
+- The original `runtimeClient` initialization bug would cause a nil pointer panic when trying to use `GetMachineConfig()`
