@@ -218,5 +218,5 @@ To use this fix:
 
 ## Related Issues
 
-- OCPBUGS-5988: etcd race condition (existing 1-minute reboot delay addresses this)
-- This fix addresses a different but related timing issue with MCO annotations
+- OCPBUGS-5988: RBAC bug (existing 1-minute reboot delay in the installer addresses this)
+- This fix addresses a different timing issue with MCO annotations becoming stale
