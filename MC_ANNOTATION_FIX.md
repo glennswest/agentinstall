@@ -9,9 +9,15 @@ Successfully tested on 2026-01-08 with OpenShift 4.18.30. The fix prevents the s
 | Version | Affected | Tested |
 |---------|----------|--------|
 | 4.18.30 | Yes | Fixed and verified |
-| 4.20.4  | Yes | Observed same deadlock - nodes stuck with stale `rendered-master-*` annotations pointing to deleted MachineConfig |
+| 4.20.4  | Yes | Patched release built with fix - testing in progress |
 
 The issue is present in the upstream `assisted-installer` code and affects all OpenShift versions using agent-based installation.
+
+### Build Details (4.20.4)
+
+- Patched orchestrator digest: `sha256:23cbb0852d139d8ea99447bf0c1763423291ba16325c13d92b432c7f21ddd1d7`
+- Label: `io.openshift.release.operator=true` (required!)
+- Release: 194 images (complete)
 
 ## Problem Description
 
@@ -414,42 +420,116 @@ index b27a5b2..9534009 100644
 
 To use this fix:
 
-1. Build the patched image (note: use `agent-installer-orchestrator` for agent-based installs):
-   ```bash
-   cd upstream/assisted-installer
-   podman build --platform linux/amd64 -f Dockerfile.assisted-installer . \
-     -t registry.gw.lo/openshift/release:agent-installer-orchestrator \
-     --label "io.openshift.release.operator=true"
-   ```
+### Step 1: Build the patched image
 
-2. Push to local registry:
-   ```bash
-   podman push --tls-verify=false registry.gw.lo/openshift/release:agent-installer-orchestrator
-   ```
+**CRITICAL**: You MUST include the `io.openshift.release.operator=true` label. Without this label, `oc adm release new` will silently drop the image from the release!
 
-3. Create a new release with the patched orchestrator (run on registry host):
-   ```bash
-   oc adm release new \
-     --from-release=registry.gw.lo/openshift/release:4.18.30-x86_64 \
-     --to-image=registry.gw.lo/openshift/release:4.18.30-x86_64 \
-     --insecure=true \
-     agent-installer-orchestrator=registry.gw.lo/openshift/release:agent-installer-orchestrator
-   ```
+Use a unique tag like `orchestrator-patched` to avoid conflicts when re-mirroring overwrites stock images:
 
-4. Re-extract openshift-install from the new release:
-   ```bash
-   oc adm release extract --command=openshift-install \
-     --to=/var/lib/openshift-cache \
-     registry.gw.lo/openshift/release:4.18.30-x86_64 --insecure=true
-   ```
+```bash
+cd upstream/assisted-installer
+docker build --platform linux/amd64 -f Dockerfile.assisted-installer . \
+  -t registry.gw.lo/openshift/release:orchestrator-patched \
+  --label "io.openshift.release.operator=true"
+```
 
-5. The next agent-based install will use the patched orchestrator.
+### Step 2: Push to local registry
+
+If your registry uses self-signed certificates, use skopeo:
+
+```bash
+# Save image to tar
+docker save registry.gw.lo/openshift/release:orchestrator-patched -o /tmp/orchestrator-patched.tar
+
+# Copy to registry host and push with skopeo
+scp /tmp/orchestrator-patched.tar root@registry.gw.lo:/tmp/
+ssh root@registry.gw.lo "skopeo copy \
+  docker-archive:/tmp/orchestrator-patched.tar \
+  docker://registry.gw.lo/openshift/release:orchestrator-patched \
+  --dest-tls-verify=false"
+```
+
+### Step 3: Get the digest
+
+The digest is required for the release - **never use tags** in release images:
+
+```bash
+DIGEST=$(ssh root@registry.gw.lo "skopeo inspect \
+  docker://registry.gw.lo/openshift/release:orchestrator-patched \
+  --tls-verify=false --format '{{.Digest}}'")
+echo "Patched orchestrator digest: $DIGEST"
+```
+
+### Step 4: Create patched release (run on registry host)
+
+```bash
+oc adm release new \
+  --from-release=registry.gw.lo/openshift/release:4.20.4-x86_64 \
+  --to-image=registry.gw.lo/openshift/release:4.20.4-x86_64 \
+  --insecure=true \
+  agent-installer-orchestrator=registry.gw.lo/openshift/release@${DIGEST}
+```
+
+### Step 5: Verify the release
+
+Ensure the patched release has all images (194 for 4.20.x):
+
+```bash
+oc adm release info registry.gw.lo/openshift/release:4.20.4-x86_64 --insecure 2>&1 | head -20
+```
+
+Verify orchestrator uses digest not tag:
+
+```bash
+oc adm release info registry.gw.lo/openshift/release:4.20.4-x86_64 --insecure 2>&1 | grep orchestrator
+```
+
+Should show: `agent-installer-orchestrator   registry.gw.lo/openshift/release@sha256:...`
+
+### Step 6: Update openshift-install cache
+
+```bash
+ssh root@registry.gw.lo "rm -f /var/lib/openshift-cache/openshift-install-4.20.4"
+ssh root@registry.gw.lo "oc adm release extract --command=openshift-install \
+  --to=/var/lib/openshift-cache \
+  registry.gw.lo/openshift/release:4.20.4-x86_64 --insecure=true"
+ssh root@registry.gw.lo "ln -sf openshift-install-linux-4.20.4 /var/lib/openshift-cache/openshift-install-4.20.4"
+```
 
 ## Important Notes
 
+- **CRITICAL - Label required**: Images MUST have label `io.openshift.release.operator=true` or they are silently dropped from the release
+- **Use unique tag**: Use a tag like `orchestrator-patched` to avoid conflicts when mirroring overwrites stock images
+- **Always use digest**: Release images must reference components by `@sha256:...` digest, never by tag
 - **Component name**: Agent-based installs use `agent-installer-orchestrator`, NOT `baremetal-installer` (which is for IPI installs)
+- **Mirror warning**: Running `oc mirror` or `oc adm release mirror` can overwrite your patched release! Use a unique tag and re-apply the patch after mirroring
 - Both are built from the same repo (`assisted-installer`) using different Dockerfiles
 - The release image embeds the digest, so you must re-extract `openshift-install` after creating a new release
+
+## Source Code Repository
+
+The patched code is maintained in a GitHub fork of the upstream repository:
+
+| Repository | Location |
+|------------|----------|
+| Upstream | https://github.com/openshift/assisted-installer |
+| Fork (glennswest) | https://github.com/glennswest/assisted-installer |
+| Branch | `master` |
+| Patch Commit | `a6a0fc3` - "Fix stale MachineConfig annotation deadlock in agent-based installs" |
+
+### Modified Files in Fork
+
+```
+upstream/assisted-installer/
+├── src/
+│   ├── config/
+│   │   └── config.go                 # Added HighAvailabilityMode flag
+│   ├── installer/
+│   │   └── installer.go              # Added waitForMCAnnotationsConsistent()
+│   └── k8s_client/
+│       ├── k8s_client.go             # Fixed runtimeClient init + GetMachineConfig()
+│       └── mock_k8s_client.go        # Added mock for GetMachineConfig
+```
 
 ## Related Issues
 
