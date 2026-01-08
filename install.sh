@@ -221,25 +221,6 @@ disown 2>/dev/null || true
 echo ""
 echo "[Step 6] Waiting for bootstrap to complete..."
 
-# Start background task to hold control0 as soon as API is reachable
-CONTROL0_HOSTNAME="control0.gw.lo"
-(
-    echo "  [Background] Waiting for API to hold control0..."
-    for i in {1..120}; do
-        if curl -sk --connect-timeout 2 https://api.gw.lo:6443/healthz &>/dev/null; then
-            sleep 10  # Give MCO a moment to create rendered configs
-            CURRENT_RENDERED=$(oc get mc -o name 2>/dev/null | grep rendered-master | head -1 | sed 's|machineconfig.machineconfiguration.openshift.io/||')
-            if [ -n "$CURRENT_RENDERED" ]; then
-                if oc get node "$CONTROL0_HOSTNAME" &>/dev/null; then
-                    oc patch node "$CONTROL0_HOSTNAME" --type merge -p "{\"metadata\":{\"annotations\":{\"machineconfiguration.openshift.io/desiredConfig\":\"${CURRENT_RENDERED}\",\"machineconfiguration.openshift.io/currentConfig\":\"${CURRENT_RENDERED}\",\"machineconfiguration.openshift.io/state\":\"Done\",\"machineconfiguration.openshift.io/reason\":\"\"}}}" 2>/dev/null && echo "  [Background] control0 held (state=Done)" && break
-                fi
-            fi
-        fi
-        sleep 10
-    done
-) &
-HOLD_PID=$!
-
 # Check for kube-apiserver crash loop (bad ISO detection)
 echo "Checking for bootkube health..."
 KUBE_ERROR_COUNT=0
@@ -268,38 +249,6 @@ if command -v stdbuf &>/dev/null; then
 else
     openshift-install --dir="${SCRIPT_DIR}/gw" agent wait-for bootstrap-complete
 fi
-
-# Step 6.5: Wait for control1/control2 to stabilize (control0 hold started in background earlier)
-echo ""
-echo "[Step 6.5] Waiting for control plane to stabilize..."
-
-# Wait for control1/control2 to be Ready
-echo "Waiting for control1/control2 to be Ready..."
-for i in {1..60}; do
-    READY_COUNT=$(oc get nodes -l node-role.kubernetes.io/master --no-headers 2>/dev/null | grep -c " Ready " || echo "0")
-    echo "  Control plane nodes Ready: ${READY_COUNT}/3"
-    if [ "$READY_COUNT" -ge 2 ]; then
-        break
-    fi
-    sleep 10
-done
-
-# Wait for MCO to stabilize on control1/control2
-echo "Waiting for MCO to stabilize..."
-for i in {1..60}; do
-    DEGRADED=$(oc get mcp master -o jsonpath='{.status.degradedMachineCount}' 2>/dev/null || echo "unknown")
-    UPDATED=$(oc get mcp master -o jsonpath='{.status.conditions[?(@.type=="Updated")].status}' 2>/dev/null || echo "unknown")
-    echo "  Master MCP: degraded=${DEGRADED}, updated=${UPDATED}"
-    if [ "$DEGRADED" = "0" ] && [ "$UPDATED" = "True" ]; then
-        echo "  Master MCP healthy"
-        break
-    fi
-    sleep 10
-done
-
-# Release control0
-echo "Releasing control0 for MCD processing..."
-oc annotate node "$CONTROL0_HOSTNAME" machineconfiguration.openshift.io/state- 2>/dev/null || true
 
 # Step 7: Wait for install completion
 echo ""
