@@ -342,10 +342,13 @@ class AgentMonitor:
                         events = self.get_events(self.cluster_id)
                         self.root.after(0, lambda e=events: self.update_install_log(e))
 
-                    # Switch to oc mode when kube API is reachable
+                    # Switch to oc mode when kube API is reachable AND all nodes have joined
                     if self.kube_api_reachable():
-                        self.mode = "oc"
-                        log("Switching to oc mode (kube API reachable)")
+                        nodes = self.get_oc_nodes()
+                        expected_nodes = len(self.hostname_by_mac)  # From agent-config
+                        if len(nodes) >= expected_nodes and expected_nodes > 0:
+                            self.mode = "oc"
+                            log(f"Switching to oc mode ({len(nodes)}/{expected_nodes} nodes joined)")
 
                     self.root.after(0, lambda: self.status_label.config(
                         text=f"Last update: {time.strftime('%H:%M:%S')}"

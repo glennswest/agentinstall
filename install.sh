@@ -26,6 +26,12 @@ echo "Version: ${OCP_VERSION}"
 echo "Registry: ${LOCAL_REGISTRY}"
 echo "=========================================="
 
+# Record install start
+record_install_start "${OCP_VERSION}"
+
+# Trap to record failure on exit
+trap 'if [ $? -ne 0 ]; then record_install_end false; fi' EXIT
+
 # Step 0: Stop all VMs first (must complete before anything else)
 echo ""
 echo "[Step 0] Stopping all VMs..."
@@ -211,9 +217,40 @@ echo "Starting installation monitor..."
 "${SCRIPT_DIR}/venv/bin/python3" "${SCRIPT_DIR}/monitor.py" &
 disown 2>/dev/null || true
 
-# Step 6: Wait for bootstrap completion
+# Step 6: Wait for install to start, then power off workers
 echo ""
-echo "[Step 6] Waiting for bootstrap to complete..."
+echo "[Step 6] Waiting for installation to start..."
+
+# Poll assisted-installer API for "installing" status
+TOKEN_FILE="${SCRIPT_DIR}/gw/.openshift_install_state.json"
+INSTALL_STARTED=0
+for i in {1..120}; do
+    # Get auth token from state file
+    if [ -f "$TOKEN_FILE" ]; then
+        TOKEN=$(python3 -c "import json; f=open('$TOKEN_FILE'); d=json.load(f); print(d.get('*gencrypto.AuthConfig',{}).get('UserAuthToken',''))" 2>/dev/null || echo "")
+        if [ -n "$TOKEN" ]; then
+            STATUS=$(curl -sk -H "Authorization: $TOKEN" "http://${RENDEZVOUS_IP}:8090/api/assisted-install/v2/clusters" 2>/dev/null | python3 -c "import sys,json; d=json.load(sys.stdin); print(d[0].get('status','') if d else '')" 2>/dev/null || echo "")
+            echo "  Cluster status: ${STATUS:-waiting...}"
+            if [ "$STATUS" = "installing" ] || [ "$STATUS" = "finalizing" ] || [ "$STATUS" = "installed" ]; then
+                INSTALL_STARTED=1
+                break
+            fi
+        fi
+    fi
+    sleep 10
+done
+
+if [ "$INSTALL_STARTED" -eq 1 ]; then
+    echo "Installation started, powering off workers to let control plane initialize first..."
+    for vmid in "${WORKER_VM_IDS[@]}"; do
+        poweroff_vm "$vmid"
+    done
+else
+    echo "WARNING: Could not detect install start, continuing with all nodes..."
+fi
+
+echo ""
+echo "Waiting for bootstrap to complete..."
 
 # Check for kube-apiserver crash loop (bad ISO detection)
 echo "Checking for bootkube health..."
@@ -244,6 +281,73 @@ else
     openshift-install --dir="${SCRIPT_DIR}/gw" agent wait-for bootstrap-complete
 fi
 
+# Step 6.5: Wait for control plane to be healthy before starting workers
+echo ""
+echo "[Step 6.5] Waiting for control plane to stabilize..."
+
+# Hold control0 from rebooting - set its state to Done so MCD won't touch it
+echo "Holding control0 to let control1/control2 stabilize first..."
+CONTROL0_HOSTNAME="control0.gw.lo"
+for i in {1..30}; do
+    CURRENT_RENDERED=$(oc get mc -o name 2>/dev/null | grep rendered-master | head -1 | sed 's|machineconfig.machineconfiguration.openshift.io/||')
+    if [ -n "$CURRENT_RENDERED" ]; then
+        if oc get node "$CONTROL0_HOSTNAME" &>/dev/null; then
+            oc patch node "$CONTROL0_HOSTNAME" --type merge -p "{\"metadata\":{\"annotations\":{\"machineconfiguration.openshift.io/desiredConfig\":\"${CURRENT_RENDERED}\",\"machineconfiguration.openshift.io/currentConfig\":\"${CURRENT_RENDERED}\",\"machineconfiguration.openshift.io/state\":\"Done\",\"machineconfiguration.openshift.io/reason\":\"\"}}}" 2>/dev/null && echo "  control0 held (state=Done)" && break
+        fi
+    fi
+    sleep 5
+done
+
+# Wait for control plane nodes to be Ready
+echo "Waiting for control plane nodes to be Ready..."
+CONTROL_READY=0
+for i in {1..60}; do
+    READY_COUNT=$(oc get nodes -l node-role.kubernetes.io/master --no-headers 2>/dev/null | grep -c " Ready " || echo "0")
+    EXPECTED_MASTERS=${#CONTROL_VM_IDS[@]}
+    echo "  Control plane nodes Ready: ${READY_COUNT}/${EXPECTED_MASTERS}"
+    if [ "$READY_COUNT" -ge "$EXPECTED_MASTERS" ]; then
+        CONTROL_READY=1
+        break
+    fi
+    sleep 10
+done
+
+if [ "$CONTROL_READY" -ne 1 ]; then
+    echo "WARNING: Not all control plane nodes are Ready, continuing anyway..."
+fi
+
+# Wait for MCO to be healthy (master MCP not degraded)
+echo "Waiting for Machine Config Operator to stabilize..."
+MCO_HEALTHY=0
+for i in {1..60}; do
+    # Check if master MCP exists and is not degraded
+    DEGRADED=$(oc get mcp master -o jsonpath='{.status.degradedMachineCount}' 2>/dev/null || echo "unknown")
+    UPDATED=$(oc get mcp master -o jsonpath='{.status.conditions[?(@.type=="Updated")].status}' 2>/dev/null || echo "unknown")
+
+    if [ "$DEGRADED" = "0" ] && [ "$UPDATED" = "True" ]; then
+        echo "  Master MCP healthy: degraded=0, updated=True"
+        MCO_HEALTHY=1
+        break
+    fi
+
+    echo "  Master MCP: degraded=${DEGRADED}, updated=${UPDATED} (attempt $i/60)"
+    sleep 10
+done
+
+if [ "$MCO_HEALTHY" -ne 1 ]; then
+    echo "WARNING: MCO not fully healthy, continuing anyway..."
+fi
+
+# Release control0 - clear state so MCD can process it
+echo "Releasing control0 for MCD processing..."
+oc annotate node "$CONTROL0_HOSTNAME" machineconfiguration.openshift.io/state- 2>/dev/null || true
+
+# Power on workers
+echo "Control plane ready, powering on workers..."
+for vmid in "${WORKER_VM_IDS[@]}"; do
+    poweron_vm "$vmid"
+done
+
 # Step 7: Wait for install completion
 echo ""
 echo "[Step 7] Waiting for installation to complete..."
@@ -253,8 +357,14 @@ else
     openshift-install --dir="${SCRIPT_DIR}/gw" agent wait-for install-complete
 fi
 
+# Record successful install
+record_install_end true
+
 echo ""
 echo "=========================================="
 echo "Installation Complete!"
 echo "Kubeconfig: ${KUBECONFIG_DIR}/config"
 echo "=========================================="
+
+# Show install history
+show_install_history

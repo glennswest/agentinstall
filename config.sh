@@ -51,3 +51,106 @@ export WORKER_MEMORY=16000
 
 # Network
 export NETWORK_BRIDGE='vmbr0'
+
+# Install history file
+export INSTALL_HISTORY_FILE="${CONFIG_DIR}/install-history.json"
+
+# Record install start
+record_install_start() {
+    local version="$1"
+    local start_time=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+    local start_date=$(date +"%Y-%m-%d")
+
+    # Create history file if it doesn't exist
+    if [ ! -f "$INSTALL_HISTORY_FILE" ]; then
+        echo '[]' > "$INSTALL_HISTORY_FILE"
+    fi
+
+    # Append to array using python (handles JSON properly)
+    python3 -c "
+import json
+with open('$INSTALL_HISTORY_FILE', 'r') as f:
+    history = json.load(f)
+history.append({
+    'version': '${version}',
+    'start_time': '${start_time}',
+    'start_date': '${start_date}',
+    'end_time': None,
+    'end_date': None,
+    'completed': False
+})
+with open('$INSTALL_HISTORY_FILE', 'w') as f:
+    json.dump(history, f, indent=2)
+"
+    echo "Install started: ${version} at ${start_time}"
+}
+
+# Record install end
+record_install_end() {
+    local completed="${1:-true}"
+    local end_time=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+    local end_date=$(date +"%Y-%m-%d")
+
+    if [ ! -f "$INSTALL_HISTORY_FILE" ]; then
+        echo "Warning: No install history file found"
+        return 1
+    fi
+
+    # Update the last record
+    python3 -c "
+import json
+with open('$INSTALL_HISTORY_FILE', 'r') as f:
+    history = json.load(f)
+if history:
+    history[-1]['end_time'] = '${end_time}'
+    history[-1]['end_date'] = '${end_date}'
+    history[-1]['completed'] = '${completed}' == 'true'
+with open('$INSTALL_HISTORY_FILE', 'w') as f:
+    json.dump(history, f, indent=2)
+"
+    echo "Install ended: ${end_time} (completed: ${completed})"
+}
+
+# Show install history
+show_install_history() {
+    if [ ! -f "$INSTALL_HISTORY_FILE" ]; then
+        echo "No install history found"
+        return
+    fi
+
+    echo "Install History:"
+    echo "================"
+    python3 -c "
+import json
+from datetime import datetime
+
+with open('$INSTALL_HISTORY_FILE', 'r') as f:
+    history = json.load(f)
+
+for i, h in enumerate(history, 1):
+    status = 'COMPLETE' if h.get('completed') else 'INCOMPLETE'
+    start = h.get('start_time', '')
+    end = h.get('end_time', '')
+
+    # Calculate duration
+    duration = 'N/A'
+    if start and end:
+        try:
+            start_dt = datetime.fromisoformat(start.replace('Z', '+00:00'))
+            end_dt = datetime.fromisoformat(end.replace('Z', '+00:00'))
+            delta = end_dt - start_dt
+            hours, remainder = divmod(int(delta.total_seconds()), 3600)
+            minutes, seconds = divmod(remainder, 60)
+            if hours > 0:
+                duration = f'{hours}h {minutes}m {seconds}s'
+            elif minutes > 0:
+                duration = f'{minutes}m {seconds}s'
+            else:
+                duration = f'{seconds}s'
+        except:
+            duration = 'N/A'
+
+    end_display = end or 'in progress'
+    print(f\"{i}. {h['version']} | {h.get('start_date', 'N/A')} | Start: {start} | End: {end_display} | Duration: {duration} | {status}\")
+"
+}

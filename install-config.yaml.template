@@ -28,12 +28,6 @@ sshKey: 'SSH_KEY_PLACEHOLDER'
 imageDigestSources:
 - mirrors:
   - registry.gw.lo/openshift/release
-  source: quay.io/openshift-release-dev/ocp-release
-- mirrors:
-  - registry.gw.lo/openshift/release
-  source: quay.io/openshift-release-dev/ocp-v4.0-art-dev
-- mirrors:
-  - registry.gw.lo/openshift/release
   source: registry.gw.lo/openshift/release
 additionalTrustBundle: |
   -----BEGIN CERTIFICATE-----

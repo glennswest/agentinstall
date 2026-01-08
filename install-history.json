@@ -1,0 +1,58 @@
+[
+  {
+    "version": "4.18.30",
+    "start_time": "2026-01-07T23:14:47Z",
+    "start_date": "2026-01-07",
+    "end_time": "2026-01-07T23:44:59Z",
+    "end_date": "2026-01-07",
+    "completed": false
+  },
+  {
+    "version": "4.18.30",
+    "start_time": "2026-01-07T23:45:03Z",
+    "start_date": "2026-01-07",
+    "end_time": null,
+    "end_date": null,
+    "completed": false
+  },
+  {
+    "version": "4.18.30",
+    "start_time": "2026-01-07T23:45:03Z",
+    "start_date": "2026-01-07",
+    "end_time": null,
+    "end_date": null,
+    "completed": false
+  },
+  {
+    "version": "4.18.30",
+    "start_time": "2026-01-07T23:45:48Z",
+    "start_date": "2026-01-07",
+    "end_time": "2026-01-07T23:48:08Z",
+    "end_date": "2026-01-07",
+    "completed": false
+  },
+  {
+    "version": "4.18.30",
+    "start_time": "2026-01-07T23:49:20Z",
+    "start_date": "2026-01-07",
+    "end_time": null,
+    "end_date": null,
+    "completed": false
+  },
+  {
+    "version": "4.18.30",
+    "start_time": "2026-01-07T23:50:39Z",
+    "start_date": "2026-01-07",
+    "end_time": "2026-01-07T23:54:49Z",
+    "end_date": "2026-01-07",
+    "completed": false
+  },
+  {
+    "version": "4.18.30",
+    "start_time": "2026-01-07T23:55:22Z",
+    "start_date": "2026-01-07",
+    "end_time": null,
+    "end_date": null,
+    "completed": false
+  }
+]
