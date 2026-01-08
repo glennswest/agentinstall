@@ -438,8 +438,8 @@ class AgentMonitor:
         # Update hosts table with nodes and operator rollout info
         self.root.after(0, lambda n=nodes, o=operators: self.update_nodes_table(n, o))
 
-        # Update summary with problem operators
-        self.root.after(0, lambda o=operators: self.update_operator_summary(o))
+        # Update summary with nodes and problem operators
+        self.root.after(0, lambda n=nodes, o=operators: self.update_operator_summary(o, n))
 
         # Update install log with operators
         self.root.after(0, lambda o=operators: self.update_operators_log(o))
@@ -663,10 +663,28 @@ class AgentMonitor:
         if not has_failures:
             self.summary_text.insert(tk.END, "All validations passing\n", "success")
 
-    def update_operator_summary(self, operators):
-        """Update summary tab with problem operators (not available, degraded, or progressing)"""
+    def update_operator_summary(self, operators, nodes=None):
+        """Update summary tab with nodes and problem operators"""
         self.summary_text.delete("1.0", tk.END)
 
+        # Show node status first
+        if nodes:
+            self.summary_text.insert(tk.END, "Nodes\n", "host")
+            for node in sorted(nodes, key=lambda n: n.get("metadata", {}).get("name", "")):
+                name = node.get("metadata", {}).get("name", "unknown")
+                labels = node.get("metadata", {}).get("labels", {})
+                conditions = node.get("status", {}).get("conditions", [])
+                ready = any(c.get("type") == "Ready" and c.get("status") == "True" for c in conditions)
+
+                role = "master" if "node-role.kubernetes.io/master" in labels or "node-role.kubernetes.io/control-plane" in labels else "worker"
+
+                if ready:
+                    self.summary_text.insert(tk.END, f"  ✓ {name} ({role}) Ready\n", "success")
+                else:
+                    self.summary_text.insert(tk.END, f"  ○ {name} ({role}) NotReady\n", "error")
+            self.summary_text.insert(tk.END, "\n")
+
+        # Show problem operators
         problem_ops = []
         for op in operators:
             name = op.get("metadata", {}).get("name", "unknown")
@@ -694,16 +712,16 @@ class AgentMonitor:
                 problem_ops.append((name, "progressing", msg))
 
         if problem_ops:
-            self.summary_text.insert(tk.END, f"Problem Operators ({len(problem_ops)})\n\n", "host")
+            self.summary_text.insert(tk.END, f"Problem Operators ({len(problem_ops)})\n", "host")
             for name, status, msg in problem_ops:
                 if status == "degraded":
-                    self.summary_text.insert(tk.END, f"✗ {name} (degraded)\n", "failure")
+                    self.summary_text.insert(tk.END, f"  ✗ {name} (degraded)\n", "failure")
                 elif status == "unavailable":
-                    self.summary_text.insert(tk.END, f"○ {name} (unavailable)\n", "error")
+                    self.summary_text.insert(tk.END, f"  ○ {name} (unavailable)\n", "error")
                 else:
-                    self.summary_text.insert(tk.END, f"● {name} (progressing)\n", "pending")
+                    self.summary_text.insert(tk.END, f"  ● {name} (progressing)\n", "pending")
                 if msg:
-                    self.summary_text.insert(tk.END, f"    {msg[:100]}\n", "pending")
+                    self.summary_text.insert(tk.END, f"      {msg[:100]}\n", "pending")
         else:
             self.summary_text.insert(tk.END, "All operators available\n", "success")
 
