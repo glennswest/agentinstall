@@ -334,11 +334,11 @@ class AgentMonitor:
                     self.root.after(0, lambda h=hosts: self.update_hosts(h))
 
                     # Switch to install tab and update install log when installing
-                    if status in ("installing", "finalizing") and not self.switched_to_install:
-                        self.root.after(0, lambda: self.notebook.select(1))
+                    if status in ("preparing-for-installation", "installing", "finalizing") and not self.switched_to_install:
+                        self.root.after(0, lambda: self.notebook.select(2))  # Installation tab is index 2
                         self.switched_to_install = True
 
-                    if status in ("installing", "finalizing", "installed"):
+                    if status in ("preparing-for-installation", "installing", "finalizing", "installed"):
                         events = self.get_events(self.cluster_id)
                         self.root.after(0, lambda e=events: self.update_install_log(e))
 
