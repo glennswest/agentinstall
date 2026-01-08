@@ -10,7 +10,7 @@ During agent-based OpenShift installations, the bootstrap node—also known as t
 
 > **Note:** In agent-based installs, one control plane node acts as the "rendezvous host" where assisted-service runs and orchestrates the installation. This node is identified by `isBootstrap=true` in the installer code.
 
-### The Issue
+### The Issue (High Level)
 
 1. During installation, the Machine Config Operator (MCO) creates "rendered" MachineConfigs (e.g., `rendered-master-abc123`)
 2. Nodes receive annotations pointing to these rendered configs:
@@ -20,6 +20,97 @@ During agent-based OpenShift installations, the bootstrap node—also known as t
 4. Nodes end up with annotations pointing to **non-existent** MachineConfigs
 5. MCO marks these nodes as "Degraded" with reason: `missing MachineConfig rendered-master-xxx`
 6. MCO refuses to update Degraded nodes, creating a permanent deadlock
+
+### Detailed Failure Scenario Timeline
+
+Here's exactly how the race condition occurs:
+
+```
+TIME    EVENT
+─────────────────────────────────────────────────────────────────────────────
+T+0     Installation begins. All 3 control plane nodes boot from agent ISO.
+        control0 is the "rendezvous host" running assisted-service.
+
+T+2m    Bootkube starts on control0. Creates initial cluster resources.
+        MCO starts and creates first rendered config: rendered-master-aaa111
+
+T+3m    control1 and control2 join the cluster.
+        MCO daemon sets their annotations:
+          currentConfig: rendered-master-aaa111
+          desiredConfig: rendered-master-aaa111
+          state: Done
+
+T+5m    A new MachineConfig is added (e.g., from cluster-config-operator).
+        MCO detects the change and renders a NEW config: rendered-master-bbb222
+
+        MCO updates MachineConfigPool "master" to reference rendered-master-bbb222
+
+T+5m    MCO starts updating nodes one at a time:
+   +1s  - Updates control1's desiredConfig → rendered-master-bbb222
+   +2s  - control1 state changes to "Working"
+   +30s - control1 applies config, reboots
+
+T+6m    control1 comes back up with:
+          currentConfig: rendered-master-bbb222
+          desiredConfig: rendered-master-bbb222
+          state: Done
+
+        Meanwhile control2 still has:
+          currentConfig: rendered-master-aaa111  ← OLD!
+          desiredConfig: rendered-master-aaa111  ← OLD!
+          state: Done
+
+T+6m    MCO garbage collector runs:
+   +5s  - Sees rendered-master-aaa111 is no longer referenced by MCP
+   +6s  - DELETES rendered-master-aaa111 from cluster
+
+        ⚠️  control2's annotations now point to NON-EXISTENT config!
+
+T+7m    assisted-installer on control0 checks:
+        ✓ 2 master nodes are kubernetes "Ready"? YES (control1, control2 are Ready)
+        ✓ Bootkube complete? YES
+        ✓ ETCD bootstrap complete? YES
+        ✓ Controller ready? YES
+
+        → assisted-installer decides it's safe to reboot control0
+
+T+7m    control0 (rendezvous host) REBOOTS
+   +1s
+        etcd loses quorum temporarily (only control1 has valid etcd)
+
+T+8m    control0 comes back as regular master (no longer bootstrap).
+        Cluster has 3 control plane nodes again.
+
+        BUT: control2 is now MCO "Degraded":
+          "unable to find rendered-master-aaa111"
+
+        MCO refuses to update Degraded nodes.
+        control2 can NEVER get the new config.
+
+T+∞     DEADLOCK:
+        - control2 stuck pointing to deleted MachineConfig
+        - MCO won't update it because it's Degraded
+        - Cluster operators waiting for MCO to report healthy
+        - Installation hangs forever or times out
+```
+
+### Why Does MCO Delete the Old Rendered Config?
+
+MCO's garbage collection logic:
+
+1. MCO keeps rendered MachineConfigs that are:
+   - Referenced by a MachineConfigPool's `spec.configuration.name`
+   - Referenced by any node's `currentConfig` or `desiredConfig` annotation
+
+2. When MCO creates a new rendered config (bbb222), it updates the MCP to point to it
+
+3. The garbage collector runs periodically and deletes any rendered config that:
+   - Is NOT the current MCP target
+   - Is NOT referenced by any node
+
+4. **The race**: If a node hasn't been updated yet (still pointing to aaa111) but MCO has already updated ALL other nodes and the MCP, the garbage collector sees aaa111 as "orphaned" and deletes it
+
+5. The slow node (control2) now has annotations pointing to a deleted object
 
 ### Why Rendezvous Host Reboot Timing Matters
 
