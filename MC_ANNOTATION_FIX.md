@@ -4,6 +4,15 @@
 
 Successfully tested on 2026-01-08 with OpenShift 4.18.30. The fix prevents the stale MC annotation deadlock and allows the installation to complete successfully.
 
+### Affected Versions
+
+| Version | Affected | Tested |
+|---------|----------|--------|
+| 4.18.30 | Yes | Fixed and verified |
+| 4.20.4  | Yes | Observed same deadlock - nodes stuck with stale `rendered-master-*` annotations pointing to deleted MachineConfig |
+
+The issue is present in the upstream `assisted-installer` code and affects all OpenShift versions using agent-based installation.
+
 ## Problem Description
 
 During agent-based OpenShift installations, the bootstrap node—also known as the **rendezvous host** (control0)—can reboot before the other control plane nodes (control1, control2) have consistent MachineConfig annotations. This creates a deadlock situation:
