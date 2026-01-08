@@ -438,6 +438,9 @@ class AgentMonitor:
         # Update hosts table with nodes and operator rollout info
         self.root.after(0, lambda n=nodes, o=operators: self.update_nodes_table(n, o))
 
+        # Update summary with problem operators
+        self.root.after(0, lambda o=operators: self.update_operator_summary(o))
+
         # Update install log with operators
         self.root.after(0, lambda o=operators: self.update_operators_log(o))
 
@@ -659,6 +662,50 @@ class AgentMonitor:
 
         if not has_failures:
             self.summary_text.insert(tk.END, "All validations passing\n", "success")
+
+    def update_operator_summary(self, operators):
+        """Update summary tab with problem operators (not available, degraded, or progressing)"""
+        self.summary_text.delete("1.0", tk.END)
+
+        problem_ops = []
+        for op in operators:
+            name = op.get("metadata", {}).get("name", "unknown")
+            conditions = op.get("status", {}).get("conditions", [])
+
+            available = any(c.get("type") == "Available" and c.get("status") == "True" for c in conditions)
+            progressing = any(c.get("type") == "Progressing" and c.get("status") == "True" for c in conditions)
+            degraded = any(c.get("type") == "Degraded" and c.get("status") == "True" for c in conditions)
+
+            # Get message
+            msg = ""
+            for c in conditions:
+                if c.get("type") == "Progressing" and c.get("message"):
+                    msg = c.get("message", "")
+                    break
+                if c.get("type") == "Degraded" and c.get("status") == "True" and c.get("message"):
+                    msg = c.get("message", "")
+                    break
+
+            if degraded:
+                problem_ops.append((name, "degraded", msg))
+            elif not available:
+                problem_ops.append((name, "unavailable", msg))
+            elif progressing:
+                problem_ops.append((name, "progressing", msg))
+
+        if problem_ops:
+            self.summary_text.insert(tk.END, f"Problem Operators ({len(problem_ops)})\n\n", "host")
+            for name, status, msg in problem_ops:
+                if status == "degraded":
+                    self.summary_text.insert(tk.END, f"✗ {name} (degraded)\n", "failure")
+                elif status == "unavailable":
+                    self.summary_text.insert(tk.END, f"○ {name} (unavailable)\n", "error")
+                else:
+                    self.summary_text.insert(tk.END, f"● {name} (progressing)\n", "pending")
+                if msg:
+                    self.summary_text.insert(tk.END, f"    {msg[:100]}\n", "pending")
+        else:
+            self.summary_text.insert(tk.END, "All operators available\n", "success")
 
     def update_install_log(self, events):
         """Update installation event log"""
