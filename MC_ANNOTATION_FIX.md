@@ -2,7 +2,9 @@
 
 ## Problem Description
 
-During agent-based OpenShift installations, the bootstrap node (control0) can reboot before the other control plane nodes (control1, control2) have consistent MachineConfig annotations. This creates a deadlock situation:
+During agent-based OpenShift installations, the bootstrap node—also known as the **rendezvous host** (control0)—can reboot before the other control plane nodes (control1, control2) have consistent MachineConfig annotations. This creates a deadlock situation:
+
+> **Note:** In agent-based installs, one control plane node acts as the "rendezvous host" where assisted-service runs and orchestrates the installation. This node is identified by `isBootstrap=true` in the installer code.
 
 ### The Issue
 
@@ -15,7 +17,7 @@ During agent-based OpenShift installations, the bootstrap node (control0) can re
 5. MCO marks these nodes as "Degraded" with reason: `missing MachineConfig rendered-master-xxx`
 6. MCO refuses to update Degraded nodes, creating a permanent deadlock
 
-### Why Bootstrap Reboot Timing Matters
+### Why Rendezvous Host Reboot Timing Matters
 
 The existing code in `installer.go` waits for:
 - 2 master nodes to be kubernetes "Ready" (`waitForMinMasterNodes`)
@@ -25,14 +27,14 @@ The existing code in `installer.go` waits for:
 
 However, **kubernetes "Ready" does not mean MCO-healthy**. A node can be Ready but have stale MC annotations, causing it to be MCO Degraded.
 
-When bootstrap reboots while control1/control2 have stale annotations:
+When the rendezvous host reboots while control1/control2 have stale annotations:
 - etcd loses quorum temporarily
 - The stale annotation deadlock persists
 - Cluster installation fails or hangs
 
 ## Solution
 
-Add a new check before bootstrap reboot that verifies all master nodes have MachineConfig annotations pointing to **existing** MachineConfig objects.
+Add a new check before the rendezvous host reboots that verifies all master nodes have MachineConfig annotations pointing to **existing** MachineConfig objects.
 
 ### Changes Made
 
