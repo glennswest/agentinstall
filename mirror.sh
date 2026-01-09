@@ -1,7 +1,9 @@
 #!/bin/bash
 # Mirror OpenShift release by calling mirror-local.sh on registry server
-# Usage: ./mirror.sh <version>
-# Example: ./mirror.sh 4.18.30
+# Includes Red Hat operator catalog by default
+# Usage: ./mirror.sh <version> [--wipe]
+# Example: ./mirror.sh 4.18.10
+# Example: ./mirror.sh 4.18.10 --wipe  # Wipe existing mirror first
 
 set -e
 
@@ -11,20 +13,39 @@ source "${SCRIPT_DIR}/config.sh"
 REGISTRY_HOST="${LOCAL_REGISTRY%%:*}"
 SSH_OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR"
 
-if [ -z "$1" ]; then
-    echo "Usage: $0 <version>"
-    echo "Example: $0 4.18.30"
+WIPE=""
+VERSION=""
+
+# Parse arguments
+for arg in "$@"; do
+    case $arg in
+        --wipe)
+            WIPE="--wipe"
+            ;;
+        *)
+            VERSION="$arg"
+            ;;
+    esac
+done
+
+if [ -z "$VERSION" ]; then
+    echo "Usage: $0 <version> [--wipe]"
+    echo "Example: $0 4.18.10"
+    echo "Example: $0 4.18.10 --wipe  # Wipe existing mirror first"
     exit 1
 fi
 
-VERSION="$1"
-
 echo "=== Mirror OpenShift ${VERSION} ==="
 echo "Registry: ${LOCAL_REGISTRY}"
+if [ -n "$WIPE" ]; then
+    echo "Mode: Wipe + Mirror (with operators)"
+else
+    echo "Mode: Mirror (with operators)"
+fi
 echo ""
 
 # Call mirror-local.sh on the registry server
-ssh $SSH_OPTS root@${REGISTRY_HOST} "/root/mirror-local.sh ${VERSION}"
+ssh $SSH_OPTS root@${REGISTRY_HOST} "/root/mirror-local.sh ${VERSION} ${WIPE}"
 
 echo ""
 echo "=== Mirror Complete ==="
