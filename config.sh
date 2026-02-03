@@ -111,6 +111,53 @@ with open('$INSTALL_HISTORY_FILE', 'w') as f:
     echo "Install ended: ${end_time} (completed: ${completed})"
 }
 
+# Resolve partial version (e.g., 4.18.z or 4.18) to latest release
+resolve_latest_version() {
+    local input_version="$1"
+    local major_minor
+
+    # Strip .z suffix if present
+    if [[ "$input_version" =~ ^([0-9]+\.[0-9]+)\.z$ ]]; then
+        major_minor="${BASH_REMATCH[1]}"
+    # Check if only major.minor provided (no patch)
+    elif [[ "$input_version" =~ ^[0-9]+\.[0-9]+$ ]]; then
+        major_minor="$input_version"
+    else
+        # Full version provided, return as-is
+        echo "$input_version"
+        return
+    fi
+
+    echo "Looking up latest ${major_minor}.x release..." >&2
+
+    # Query Quay.io for available tags matching the major.minor version
+    local api_url="https://quay.io/api/v1/repository/openshift-release-dev/ocp-release/tag/?filter_tag_name=like:${major_minor}&limit=100"
+
+    local response
+    response=$(curl -sL "$api_url")
+
+    if [ -z "$response" ]; then
+        echo "Error: Could not fetch releases for ${major_minor}" >&2
+        exit 1
+    fi
+
+    # Extract x86_64 versions, sort, and get the latest
+    local resolved_version
+    resolved_version=$(echo "$response" | jq -r '.tags[].name' 2>/dev/null | \
+        grep "^${major_minor}\.[0-9]*-x86_64$" | \
+        sed 's/-x86_64//' | \
+        sort -V | \
+        tail -1)
+
+    if [ -z "$resolved_version" ]; then
+        echo "Error: No releases found for ${major_minor}" >&2
+        exit 1
+    fi
+
+    echo "Resolved to version: ${resolved_version}" >&2
+    echo "$resolved_version"
+}
+
 # Show install history
 show_install_history() {
     if [ ! -f "$INSTALL_HISTORY_FILE" ]; then

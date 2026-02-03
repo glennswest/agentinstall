@@ -4,6 +4,8 @@
 # Usage: ./mirror.sh <version> [--wipe]
 # Example: ./mirror.sh 4.18.10
 # Example: ./mirror.sh 4.18.10 --wipe  # Wipe existing mirror first
+# Example: ./mirror.sh 4.18.z          # Mirror latest 4.18.x release
+# Example: ./mirror.sh 4.18            # Mirror latest 4.18.x release
 
 set -e
 
@@ -32,8 +34,12 @@ if [ -z "$VERSION" ]; then
     echo "Usage: $0 <version> [--wipe]"
     echo "Example: $0 4.18.10"
     echo "Example: $0 4.18.10 --wipe  # Wipe existing mirror first"
+    echo "Example: $0 4.18.z          # Mirror latest 4.18.x release"
+    echo "Example: $0 4.18            # Mirror latest 4.18.x release"
     exit 1
 fi
+
+VERSION=$(resolve_latest_version "$VERSION")
 
 echo "=== Mirror OpenShift ${VERSION} ==="
 echo "Registry: ${LOCAL_REGISTRY}"

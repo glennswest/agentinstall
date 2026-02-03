@@ -14,11 +14,13 @@ export PATH="${HOME}/.local/bin:${PATH}"
 
 if [ -z "$1" ]; then
     echo "Usage: $0 <ocp-version>"
-    echo "Example: $0 4.14.10"
+    echo "Example: $0 4.18.10"
+    echo "Example: $0 4.18.z   # Install latest 4.18.x release"
+    echo "Example: $0 4.18     # Install latest 4.18.x release"
     exit 1
 fi
 
-OCP_VERSION="$1"
+OCP_VERSION=$(resolve_latest_version "$1")
 
 echo "=========================================="
 echo "Agent-Based OpenShift Installation"
