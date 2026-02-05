@@ -59,7 +59,7 @@ RELEASE_IMAGE="${LOCAL_REGISTRY}/${LOCAL_REPOSITORY}:${OCP_VERSION}-${ARCHITECTU
 
 # Check release image exists
 if ! ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR \
-    "root@${REGISTRY_HOST}" "oc image info ${RELEASE_IMAGE} --insecure >/dev/null 2>&1"; then
+    "root@${REGISTRY_HOST}" "oc image info ${RELEASE_IMAGE} --registry-config=/root/pullsecret-combined.json --insecure >/dev/null 2>&1"; then
     echo "ERROR: Release image not found: ${RELEASE_IMAGE}"
     echo "Run mirror first to sync the release to your registry."
     exit 1
@@ -68,11 +68,11 @@ echo "  ✓ Release image exists"
 
 # Get machine-os-images digest and verify it exists
 MOS_DIGEST=$(ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR \
-    "root@${REGISTRY_HOST}" "oc adm release info ${RELEASE_IMAGE} --insecure 2>/dev/null | grep machine-os-images | awk '{print \$2}'" 2>/dev/null)
+    "root@${REGISTRY_HOST}" "oc adm release info ${RELEASE_IMAGE} --registry-config=/root/pullsecret-combined.json --insecure 2>/dev/null | grep machine-os-images | awk '{print \$2}'" 2>/dev/null)
 if [ -n "$MOS_DIGEST" ]; then
     MOS_IMAGE="${LOCAL_REGISTRY}/${LOCAL_REPOSITORY}@${MOS_DIGEST}"
     if ! ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR \
-        "root@${REGISTRY_HOST}" "oc image info ${MOS_IMAGE} --insecure >/dev/null 2>&1"; then
+        "root@${REGISTRY_HOST}" "oc image info ${MOS_IMAGE} --registry-config=/root/pullsecret-combined.json --insecure >/dev/null 2>&1"; then
         echo "ERROR: machine-os-images not found: ${MOS_IMAGE}"
         echo "This component is required for ISO generation."
         echo "Re-run mirror to sync all release components."
@@ -83,7 +83,320 @@ else
     echo "  ! Could not verify machine-os-images (may be older release)"
 fi
 
+# Deep verification: check all release image blobs exist in registry
+# Catches the case where manifests exist but underlying layer blobs are missing
+echo "  Verifying release image blobs..."
+BLOB_EXIT=0
+BLOB_OUTPUT=$(cat <<'BLOBCHECK' | ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR \
+    "root@${REGISTRY_HOST}" "python3 - '${RELEASE_IMAGE}' '${LOCAL_REGISTRY}' '${LOCAL_REPOSITORY}'"
+import sys, json, subprocess, ssl, traceback, re
+import urllib.request, urllib.error, urllib.parse
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
+release_image, registry, repo = sys.argv[1], sys.argv[2], sys.argv[3]
+
+with open('/root/pullsecret-combined.json') as f:
+    ps = json.load(f)
+basic_auth = None
+for k in ps.get('auths', {}):
+    if registry in k:
+        basic_auth = 'Basic ' + ps['auths'][k]['auth']
+        break
+
+if not basic_auth:
+    print(f'  WARNING: No auth found for {registry} in pull secret', file=sys.stderr)
+    print(f'  Available keys: {list(ps.get("auths", {}).keys())}', file=sys.stderr)
+
+ctx = ssl.create_default_context()
+ctx.check_hostname = False
+ctx.verify_mode = ssl.CERT_NONE
+
+error_sample = []
+
+def negotiate_auth():
+    """Negotiate registry auth - handles both Basic and Bearer token auth."""
+    print(f'  Testing registry API at https://{registry}/v2/...', file=sys.stderr)
+    req = urllib.request.Request(f'https://{registry}/v2/', method='GET')
+    if basic_auth:
+        req.add_header('Authorization', basic_auth)
+    try:
+        resp = urllib.request.urlopen(req, context=ctx, timeout=10)
+        print(f'  Registry API OK (Basic auth, status {resp.status})', file=sys.stderr)
+        return basic_auth
+    except urllib.error.HTTPError as e:
+        if e.code != 401:
+            if e.code == 404:
+                print(f'  Registry API returned 404 - may not be a v2 registry', file=sys.stderr)
+            else:
+                print(f'  Registry API returned HTTP {e.code}', file=sys.stderr)
+            sys.exit(1)
+        # 401 - check for Bearer token auth challenge
+        www_auth = e.headers.get('WWW-Authenticate', '')
+        if 'Bearer' not in www_auth:
+            print(f'  ERROR: Registry returned 401 Unauthorized - auth may be wrong', file=sys.stderr)
+            print(f'  Auth header: {"Basic <set>" if basic_auth else "NONE"}', file=sys.stderr)
+            sys.exit(1)
+        # Parse Bearer realm="...",service="...",scope="..."
+        params = dict(re.findall(r'(\w+)="([^"]*)"', www_auth))
+        realm = params.get('realm')
+        service = params.get('service', '')
+        if not realm:
+            print(f'  ERROR: Bearer challenge missing realm: {www_auth}', file=sys.stderr)
+            sys.exit(1)
+        print(f'  Registry uses token auth (realm: {realm})', file=sys.stderr)
+        # Request token with pull scope for our repo
+        scope = f'repository:{repo}:pull'
+        token_url = f'{realm}?service={urllib.parse.quote(service)}&scope={urllib.parse.quote(scope)}'
+        token_req = urllib.request.Request(token_url)
+        if basic_auth:
+            token_req.add_header('Authorization', basic_auth)
+        try:
+            token_resp = urllib.request.urlopen(token_req, context=ctx, timeout=10)
+            token_data = json.loads(token_resp.read())
+            token = token_data.get('token') or token_data.get('access_token')
+            if not token:
+                print(f'  ERROR: Token response missing token field', file=sys.stderr)
+                sys.exit(1)
+            # Verify token works
+            verify_req = urllib.request.Request(f'https://{registry}/v2/', method='GET')
+            verify_req.add_header('Authorization', f'Bearer {token}')
+            verify_resp = urllib.request.urlopen(verify_req, context=ctx, timeout=10)
+            print(f'  Registry API OK (Bearer token, status {verify_resp.status})', file=sys.stderr)
+            return f'Bearer {token}'
+        except urllib.error.HTTPError as te:
+            print(f'  ERROR: Token request failed (HTTP {te.code})', file=sys.stderr)
+            print(f'  Token URL: {token_url}', file=sys.stderr)
+            sys.exit(1)
+        except Exception as te:
+            print(f'  ERROR: Token request failed: {type(te).__name__}: {te}', file=sys.stderr)
+            sys.exit(1)
+    except Exception as e:
+        print(f'  ERROR: Cannot reach registry API: {type(e).__name__}: {e}', file=sys.stderr)
+        sys.exit(1)
+
+auth = negotiate_auth()
+
+def api(path, method='HEAD'):
+    req = urllib.request.Request(
+        f'https://{registry}/v2/{repo}/{path}', method=method)
+    if auth:
+        req.add_header('Authorization', auth)
+    req.add_header('Accept',
+        'application/vnd.docker.distribution.manifest.v2+json,'
+        'application/vnd.oci.image.manifest.v1+json,'
+        'application/vnd.docker.distribution.manifest.list.v2+json,'
+        'application/vnd.oci.image.index.v1+json')
+    try:
+        r = urllib.request.urlopen(req, context=ctx, timeout=30)
+        return r.status, r.read() if method == 'GET' else b''
+    except urllib.error.HTTPError as e:
+        if len(error_sample) < 3:
+            error_sample.append(f'HTTP {e.code} for {path}')
+        return e.code, b''
+    except Exception as e:
+        if len(error_sample) < 3:
+            error_sample.append(f'{type(e).__name__}: {e} for {path}')
+        return 0, b''
+
+# Get image pullspecs from release
+r = subprocess.run(
+    ['oc', 'adm', 'release', 'info', release_image,
+     '--pullspecs', '--registry-config=/root/pullsecret-combined.json',
+     '--insecure'],
+    capture_output=True, text=True)
+if r.returncode != 0:
+    print(f'Failed to get release info: {r.stderr}', file=sys.stderr)
+    sys.exit(1)
+
+digests = set()
+for line in r.stdout.split('\n'):
+    if '@sha256:' in line:
+        for word in line.split():
+            if '@sha256:' in word:
+                digests.add(word.split('@')[1])
+                break
+
+if not digests:
+    print('No image digests found in release', file=sys.stderr)
+    sys.exit(1)
+
+print(f'  Checking {len(digests)} images...', file=sys.stderr)
+
+# Test first manifest before parallel run
+test_digest = next(iter(digests))
+print(f'  Testing single manifest fetch: {test_digest[:20]}...', file=sys.stderr)
+test_s, test_body = api(f'manifests/{test_digest}', 'GET')
+if test_s != 200:
+    print(f'  ERROR: Test manifest fetch failed (status {test_s})', file=sys.stderr)
+    if error_sample:
+        for e in error_sample:
+            print(f'    {e}', file=sys.stderr)
+    print(f'  URL: https://{registry}/v2/{repo}/manifests/{test_digest}', file=sys.stderr)
+    sys.exit(1)
+print(f'  Test manifest OK ({len(test_body)} bytes)', file=sys.stderr)
+
+# Fetch manifests in parallel and collect blob digests
+blobs = set()
+errors = []
+
+def fetch_manifest(digest):
+    s, body = api(f'manifests/{digest}', 'GET')
+    if s != 200:
+        return digest, None
+    try:
+        m = json.loads(body)
+        found = set()
+        # Handle manifest list / OCI index (multi-arch)
+        if 'manifests' in m:
+            for sub in m['manifests']:
+                s2, body2 = api(f'manifests/{sub["digest"]}', 'GET')
+                if s2 == 200:
+                    m2 = json.loads(body2)
+                    if 'config' in m2:
+                        found.add(m2['config']['digest'])
+                    for l in m2.get('layers', []):
+                        found.add(l['digest'])
+        else:
+            if 'config' in m:
+                found.add(m['config']['digest'])
+            for l in m.get('layers', []):
+                found.add(l['digest'])
+        return digest, found
+    except Exception as e:
+        if len(error_sample) < 3:
+            error_sample.append(f'Parse error for {digest[:20]}: {e}')
+        return digest, None
+
+with ThreadPoolExecutor(max_workers=10) as pool:
+    futs = {pool.submit(fetch_manifest, d): d for d in digests}
+    done = 0
+    for f in as_completed(futs):
+        d, layer_set = f.result()
+        done += 1
+        if layer_set is None:
+            errors.append(d)
+        else:
+            blobs.update(layer_set)
+        if done % 50 == 0:
+            print(f'  Parsed {done}/{len(digests)} manifests...', file=sys.stderr)
+
+if not blobs and digests:
+    print(f'  ERROR: 0 blobs found from {len(digests)} images - registry may be corrupt', file=sys.stderr)
+    if error_sample:
+        print(f'  Error details:', file=sys.stderr)
+        for e in error_sample:
+            print(f'    {e}', file=sys.stderr)
+    print(f'FAILED:0 blobs from {len(digests)} images, {len(errors)} manifest errors')
+    sys.exit(1)
+
+print(f'  Verifying {len(blobs)} unique blobs...', file=sys.stderr)
+
+# HEAD-check blobs in parallel
+missing = []
+
+def check_blob(digest):
+    s, _ = api(f'blobs/{digest}')
+    return digest, s
+
+with ThreadPoolExecutor(max_workers=10) as pool:
+    futs = {pool.submit(check_blob, b): b for b in blobs}
+    done = 0
+    for f in as_completed(futs):
+        d, status = f.result()
+        done += 1
+        if status != 200:
+            missing.append(d)
+        if done % 500 == 0:
+            print(f'  Checked {done}/{len(blobs)} blobs...', file=sys.stderr)
+
+if errors:
+    for e in errors:
+        print(f'MANIFEST_ERROR:{e}')
+if missing:
+    for m in missing:
+        print(f'MISSING_BLOB:{m}')
+    print(f'FAILED:{len(missing)} missing blobs, {len(errors)} manifest errors')
+    sys.exit(1)
+else:
+    print(f'VERIFIED:{len(blobs)}')
+    sys.exit(0)
+BLOBCHECK
+) || BLOB_EXIT=$?
+
+if [ $BLOB_EXIT -ne 0 ]; then
+    echo ""
+    echo "$BLOB_OUTPUT"
+    echo ""
+    echo "ERROR: Registry blob verification failed!"
+    echo "Some image layers are missing from the local registry."
+    echo "Re-run: ./mirror.sh ${OCP_VERSION} --wipe"
+    exit 1
+fi
+
+BLOB_COUNT=$(echo "$BLOB_OUTPUT" | grep "^VERIFIED:" | cut -d: -f2)
+echo "  ✓ All ${BLOB_COUNT} blobs verified intact"
+
+echo ""
 echo "Registry pre-flight checks passed."
+
+# Step 0.5: Update registry certificate in install-config.yaml
+# Fetch the cert the registry serves via HTTP - always in sync, no SSH needed.
+echo ""
+echo "[Pre-flight] Updating registry certificate in install-config..."
+REGISTRY_HOST="${LOCAL_REGISTRY%%:*}"
+REGISTRY_CERT=$(curl -sf "http://${REGISTRY_HOST}/ca.crt")
+if [ -z "$REGISTRY_CERT" ]; then
+    echo "ERROR: Could not fetch certificate from http://${REGISTRY_HOST}/ca.crt"
+    exit 1
+fi
+LIVE_FP=$(echo "$REGISTRY_CERT" | openssl x509 -fingerprint -noout 2>/dev/null)
+echo "  Live registry cert: ${LIVE_FP}"
+
+# Update the certificate in install-config.yaml using python for reliable YAML handling
+python3 -c "
+import sys, re
+
+cert = '''${REGISTRY_CERT}'''
+indented_cert = '\n'.join('  ' + line for line in cert.strip().split('\n'))
+
+with open('${SCRIPT_DIR}/install-config.yaml', 'r') as f:
+    content = f.read()
+
+pattern = r'(additionalTrustBundle: \|)\n(  -----BEGIN CERTIFICATE-----\n.*?  -----END CERTIFICATE-----)'
+replacement = r'\1\n' + indented_cert
+
+new_content, count = re.subn(pattern, replacement, content, flags=re.DOTALL)
+if count == 0:
+    print('ERROR: Could not find additionalTrustBundle in install-config.yaml')
+    sys.exit(1)
+
+with open('${SCRIPT_DIR}/install-config.yaml', 'w') as f:
+    f.write(new_content)
+
+print('Certificate updated successfully')
+"
+if [ $? -ne 0 ]; then
+    echo "ERROR: Failed to update certificate in install-config.yaml"
+    exit 1
+fi
+
+# Verify the cert in install-config.yaml matches what the registry serves
+CONFIG_FP=$(python3 -c "
+import re
+with open('${SCRIPT_DIR}/install-config.yaml') as f:
+    content = f.read()
+m = re.search(r'-----BEGIN CERTIFICATE-----.*?-----END CERTIFICATE-----', content, re.DOTALL)
+if m:
+    print(m.group(0).replace('  ', ''))
+" | openssl x509 -fingerprint -noout 2>/dev/null)
+
+if [ "$LIVE_FP" != "$CONFIG_FP" ]; then
+    echo "ERROR: Certificate mismatch after update!"
+    echo "  Registry serves: ${LIVE_FP}"
+    echo "  install-config:  ${CONFIG_FP}"
+    exit 1
+fi
+echo "  ✓ Registry certificate updated and verified"
 
 # Step 1: Pull installer from local registry
 echo ""
