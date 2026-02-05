@@ -623,6 +623,29 @@ else
     openshift-install --dir="${SCRIPT_DIR}/gw" agent wait-for bootstrap-complete
 fi
 
+# Step 6.5: Fix MachineConfig bootstrap desync
+# After bootstrap pivot, the MCP status.configuration.name is empty and master
+# node annotations reference a deleted rendered MC. This blocks control0 from
+# getting its ignition config (MCS returns 500) and causes MCD to loop on
+# the other masters. See MC_BOOTSTRAP_DESYNC.md for details.
+echo ""
+echo "[Step 6.5] Applying MachineConfig bootstrap desync fix..."
+MC_FIX_RETRIES=0
+MC_FIX_MAX=12  # 2 minutes max (12 x 10s)
+while [ $MC_FIX_RETRIES -lt $MC_FIX_MAX ]; do
+    if KUBECONFIG="${SCRIPT_DIR}/gw/auth/kubeconfig" oc get mcp master >/dev/null 2>&1; then
+        "${SCRIPT_DIR}/fix-mc-desync.sh"
+        break
+    fi
+    MC_FIX_RETRIES=$((MC_FIX_RETRIES + 1))
+    echo "  Waiting for API... (${MC_FIX_RETRIES}/${MC_FIX_MAX})"
+    sleep 10
+done
+if [ $MC_FIX_RETRIES -ge $MC_FIX_MAX ]; then
+    echo "WARNING: Could not apply MC desync fix (API not reachable)"
+    echo "Run manually: ./fix-mc-desync.sh"
+fi
+
 # Step 7: Wait for install completion
 echo ""
 echo "[Step 7] Waiting for installation to complete..."

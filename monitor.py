@@ -24,6 +24,32 @@ EVENT_POLL_INTERVAL = 2  # seconds - faster polling for events
 
 LOG_FILE = "/tmp/monitor-debug.log"
 EVENT_FILE = "/tmp/monitor-events.log"
+DEBUG_CHECK_INTERVAL = 30000  # ms - debug checks every 30 seconds
+SSH_OPTS = ["-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null",
+            "-o", "LogLevel=ERROR", "-o", "ConnectTimeout=5"]
+GATHERDEBUG_SCRIPT = os.path.join(SCRIPT_DIR, "gatherdebug.sh")
+
+# Single SSH command to collect all debug info from a node
+SSH_CHECK_CMD = '; '.join([
+    'echo "===KUBELET==="',
+    'systemctl is-active kubelet 2>/dev/null || echo inactive',
+    'echo "===CRIO==="',
+    'systemctl is-active crio 2>/dev/null || echo inactive',
+    'echo "===ISSUES==="',
+    'sudo journalctl --no-pager -n 1000 -q 2>&1 | grep -iE '
+    '"x509|certificate.*unknown|crypto.*verification|ErrImagePull|ImagePullBackOff'
+    '|manifest unknown|OOMKill|No space left" | tail -10',
+    'echo "===MC==="',
+    "python3 -c \"import json; d=json.load(open('/etc/machine-config-daemon/currentconfig'));"
+    " print(d['metadata']['name'])\" 2>/dev/null || echo not-found",
+    'echo "===DISK==="',
+    'df -h / /var 2>/dev/null | tail -2',
+    'echo "===MEM==="',
+    'free -m 2>/dev/null | grep Mem',
+    'echo "===CONTAINERS==="',
+    'sudo crictl ps -a 2>/dev/null | grep -v Running | grep -v CONTAINER | tail -5',
+    'echo "===END==="',
+])
 
 def log(msg):
     """Debug logging to file"""
@@ -74,6 +100,13 @@ class AgentMonitor:
         self.hostname_by_role = {"master": [], "worker": []}
         self._load_agent_config()
 
+        # Debug state
+        self.node_ips = {}
+        self._load_node_ips()
+        self.debug_findings = {}
+        self.debug_checking = False
+        self.last_debug_check = None
+
         # Clear logs and write startup info
         with open(LOG_FILE, "w") as f:
             f.write(f"Monitor started at {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
@@ -90,6 +123,8 @@ class AgentMonitor:
         self.root.after(100, self.refresh)
         # Start event streamer
         self.start_event_streamer()
+        # Start debug checker (first check after 5s, then every 30s)
+        self.root.after(5000, self._schedule_debug_check)
 
     def setup_ui(self):
         # Cluster status frame
@@ -189,6 +224,38 @@ class AgentMonitor:
         self.install_text.tag_configure("error", foreground="#a05050")
 
         self.switched_to_install = False
+
+        # Debug tab
+        debug_frame = ttk.Frame(self.notebook, padding=10)
+        self.notebook.add(debug_frame, text="Debug")
+
+        debug_btn_frame = ttk.Frame(debug_frame)
+        debug_btn_frame.pack(fill=tk.X, pady=(0, 5))
+
+        ttk.Button(debug_btn_frame, text="Check Now",
+                   command=self.run_debug_check).pack(side=tk.LEFT, padx=2)
+        ttk.Button(debug_btn_frame, text="Gather Debug",
+                   command=self.run_gather_debug).pack(side=tk.LEFT, padx=2)
+        self.debug_auto_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(debug_btn_frame, text="Auto-check",
+                        variable=self.debug_auto_var).pack(side=tk.LEFT, padx=10)
+        self.debug_status_label = ttk.Label(debug_btn_frame, text="")
+        self.debug_status_label.pack(side=tk.RIGHT, padx=5)
+
+        self.debug_text = tk.Text(debug_frame, height=15, wrap=tk.WORD)
+        debug_scrollbar = ttk.Scrollbar(debug_frame, orient=tk.VERTICAL,
+                                        command=self.debug_text.yview)
+        self.debug_text.configure(yscrollcommand=debug_scrollbar.set)
+        self.debug_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        debug_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+        self.debug_text.tag_configure("header", foreground="#4a6fa5",
+                                      font=("Helvetica", 10, "bold"))
+        self.debug_text.tag_configure("ok", foreground="#2d7d2d")
+        self.debug_text.tag_configure("warning", foreground="#8b7355")
+        self.debug_text.tag_configure("error", foreground="#a05050")
+        self.debug_text.tag_configure("detail", foreground="#777777")
+        self.debug_text.tag_configure("info", foreground="#555555")
 
         # Control buttons
         btn_frame = ttk.Frame(self.root)
@@ -939,6 +1006,328 @@ class AgentMonitor:
                     self.details_text.insert(tk.END, f"Not eligible: {', '.join(reasons)}\n", "failure")
         except:
             pass
+
+    def _load_node_ips(self):
+        """Derive node IPs from agent-config.yaml host order and rendezvous IP"""
+        try:
+            if os.path.exists(AGENT_CONFIG_FILE):
+                with open(AGENT_CONFIG_FILE, 'r') as f:
+                    config = yaml.safe_load(f)
+                rendezvous = config.get("rendezvousIP", "192.168.1.201")
+                base_net, base_host = rendezvous.rsplit('.', 1)
+                base_host = int(base_host)
+                masters = [h for h in config.get("hosts", []) if h.get("role") == "master"]
+                workers = [h for h in config.get("hosts", []) if h.get("role") != "master"]
+                for i, host in enumerate(masters + workers):
+                    hostname = host.get("hostname", "")
+                    if hostname:
+                        self.node_ips[hostname] = f"{base_net}.{base_host + i}"
+                log(f"Node IPs: {self.node_ips}")
+        except Exception as e:
+            log(f"Failed to load node IPs: {e}")
+
+    def _schedule_debug_check(self):
+        """Schedule periodic debug checks"""
+        if self.debug_auto_var.get():
+            self.run_debug_check()
+        self.root.after(DEBUG_CHECK_INTERVAL, self._schedule_debug_check)
+
+    def run_debug_check(self):
+        """Run debug checks on all nodes in parallel"""
+        if self.debug_checking:
+            return
+        self.debug_checking = True
+        self.root.after(0, lambda: self.debug_status_label.config(text="Checking..."))
+
+        def do_checks():
+            from concurrent.futures import ThreadPoolExecutor, as_completed
+            results = {}
+
+            with ThreadPoolExecutor(max_workers=6) as executor:
+                futures = {}
+                for hostname, ip in self.node_ips.items():
+                    futures[executor.submit(self._ssh_check_node, hostname, ip)] = hostname
+
+                for future in as_completed(futures):
+                    hostname = futures[future]
+                    try:
+                        results[hostname] = future.result()
+                    except Exception as e:
+                        results[hostname] = [("error", f"Check failed: {e}")]
+
+            # Also check cluster-level issues if in oc mode
+            if self.mode == "oc":
+                cluster_findings = self._check_cluster_issues()
+                if cluster_findings:
+                    results["_cluster"] = cluster_findings
+
+            self.debug_findings = results
+            self.last_debug_check = time.strftime('%H:%M:%S')
+            self.debug_checking = False
+            self.root.after(0, self._update_debug_display)
+
+        threading.Thread(target=do_checks, daemon=True).start()
+
+    def _ssh_check_node(self, hostname, ip):
+        """Run debug checks on a single node, return list of (severity, message) tuples"""
+        findings = []
+
+        try:
+            result = subprocess.run(
+                ["ssh"] + SSH_OPTS + [f"core@{ip}", SSH_CHECK_CMD],
+                capture_output=True, text=True, timeout=15
+            )
+        except subprocess.TimeoutExpired:
+            return [("error", "SSH timeout (15s)")]
+        except Exception as e:
+            return [("error", f"SSH failed: {e}")]
+
+        if result.returncode != 0 and not result.stdout:
+            return [("error", "SSH unreachable")]
+
+        output = result.stdout
+
+        # Parse sections
+        sections = {}
+        current = None
+        for line in output.split('\n'):
+            if line.startswith("===") and line.endswith("==="):
+                current = line.strip("=")
+                sections[current] = []
+            elif current:
+                sections[current].append(line)
+
+        # Check kubelet
+        kubelet = '\n'.join(sections.get("KUBELET", [])).strip()
+        if kubelet != "active":
+            findings.append(("error", f"kubelet: {kubelet}"))
+
+        # Check crio
+        crio = '\n'.join(sections.get("CRIO", [])).strip()
+        if crio != "active":
+            findings.append(("error", f"crio: {crio}"))
+
+        # Classify issues from journal
+        issues = [l.strip() for l in sections.get("ISSUES", []) if l.strip()]
+        cert_issues = []
+        pull_issues = []
+        other_issues = []
+        for line in issues:
+            lower = line.lower()
+            if "x509" in lower or "certificate" in lower or "crypto" in lower:
+                cert_issues.append(line)
+            elif "errimagepull" in lower or "imagepullbackoff" in lower or "manifest unknown" in lower:
+                pull_issues.append(line)
+            else:
+                other_issues.append(line)
+
+        if cert_issues:
+            findings.append(("error", f"TLS/cert errors ({len(cert_issues)})"))
+            for line in cert_issues[-2:]:
+                findings.append(("detail", f"  {line[:120]}"))
+        if pull_issues:
+            findings.append(("error", f"Image pull errors ({len(pull_issues)})"))
+            for line in pull_issues[-2:]:
+                findings.append(("detail", f"  {line[:120]}"))
+        if other_issues:
+            for line in other_issues[-2:]:
+                findings.append(("warning", f"  {line[:120]}"))
+
+        # Check MachineConfig
+        mc = '\n'.join(sections.get("MC", [])).strip()
+        if mc == "not-found":
+            findings.append(("warning", "MachineConfig: currentconfig not found"))
+        elif mc:
+            findings.append(("info", f"MC: {mc}"))
+
+        # Check disk usage
+        for line in sections.get("DISK", []):
+            parts = line.split()
+            if len(parts) >= 5:
+                try:
+                    use_pct = int(parts[4].rstrip('%'))
+                    mount = parts[5] if len(parts) > 5 else ""
+                    if use_pct > 85:
+                        findings.append(("warning", f"Disk {mount}: {use_pct}% used"))
+                except (ValueError, IndexError):
+                    pass
+
+        # Check memory
+        for line in sections.get("MEM", []):
+            parts = line.split()
+            if len(parts) >= 3:
+                try:
+                    total = int(parts[1])
+                    used = int(parts[2])
+                    pct = int(used / total * 100)
+                    if pct > 90:
+                        findings.append(("warning", f"Memory: {pct}% ({used}/{total} MB)"))
+                except (ValueError, ZeroDivisionError):
+                    pass
+
+        # Check non-running containers
+        containers = [l.strip() for l in sections.get("CONTAINERS", []) if l.strip()]
+        if containers:
+            findings.append(("warning", f"Non-running containers: {len(containers)}"))
+            for line in containers[-3:]:
+                findings.append(("detail", f"  {line[:120]}"))
+
+        if not findings:
+            findings.append(("ok", "No issues detected"))
+
+        return findings
+
+    def _check_cluster_issues(self):
+        """Check for cluster-level issues via oc commands"""
+        findings = []
+        kubeconfig = os.path.join(SCRIPT_DIR, "gw", "auth", "kubeconfig")
+        env = {**os.environ, "KUBECONFIG": kubeconfig}
+
+        # Check for pending CSRs
+        try:
+            result = subprocess.run(
+                ["oc", "get", "csr", "-o", "json"],
+                capture_output=True, text=True, timeout=10, env=env
+            )
+            if result.returncode == 0:
+                csrs = json.loads(result.stdout).get("items", [])
+                pending = [c for c in csrs if not c.get("status", {}).get("conditions")]
+                if pending:
+                    findings.append(("warning", f"Pending CSRs: {len(pending)}"))
+        except Exception:
+            pass
+
+        # Check MachineConfig annotations (desync detection)
+        try:
+            result = subprocess.run(
+                ["oc", "get", "nodes", "-o", "json"],
+                capture_output=True, text=True, timeout=10, env=env
+            )
+            if result.returncode == 0:
+                nodes = json.loads(result.stdout).get("items", [])
+                for node in nodes:
+                    name = node.get("metadata", {}).get("name", "")
+                    annotations = node.get("metadata", {}).get("annotations", {})
+                    current = annotations.get("machineconfiguration.openshift.io/currentConfig", "")
+                    desired = annotations.get("machineconfiguration.openshift.io/desiredConfig", "")
+                    state = annotations.get("machineconfiguration.openshift.io/state", "")
+                    if current and desired and current != desired:
+                        findings.append(("error",
+                            f"MC desync on {name}: current={current[:30]} desired={desired[:30]} state={state}"))
+        except Exception:
+            pass
+
+        return findings
+
+    def _update_debug_display(self):
+        """Update the debug tab text widget with current findings"""
+        self.debug_text.delete("1.0", tk.END)
+        check_time = self.last_debug_check or "never"
+        self.debug_status_label.config(text=f"Last: {check_time}")
+
+        self.debug_text.insert(tk.END, f"Debug Check at {check_time}\n\n", "header")
+
+        # Count total errors/warnings
+        total_errors = 0
+        total_warnings = 0
+
+        # Show cluster-level issues first
+        if "_cluster" in self.debug_findings:
+            cluster = self.debug_findings["_cluster"]
+            if cluster:
+                self.debug_text.insert(tk.END, "Cluster\n", "header")
+                for severity, msg in cluster:
+                    self.debug_text.insert(tk.END, f"  {msg}\n", severity)
+                    if severity == "error":
+                        total_errors += 1
+                    elif severity == "warning":
+                        total_warnings += 1
+                self.debug_text.insert(tk.END, "\n")
+
+        # Show per-node findings (masters first, then workers)
+        sorted_nodes = sorted(
+            [(h, ip) for h, ip in self.node_ips.items()],
+            key=lambda x: (0 if "control" in x[0] else 1, x[0])
+        )
+
+        for hostname, ip in sorted_nodes:
+            findings = self.debug_findings.get(hostname, [])
+            short_name = hostname.split('.')[0]
+
+            # Determine node-level severity
+            has_errors = any(s == "error" for s, _ in findings)
+            has_warnings = any(s == "warning" for s, _ in findings)
+            is_ok = all(s in ("ok", "info") for s, _ in findings)
+
+            if has_errors:
+                node_tag = "error"
+                total_errors += sum(1 for s, _ in findings if s == "error")
+            elif has_warnings:
+                node_tag = "warning"
+                total_warnings += sum(1 for s, _ in findings if s == "warning")
+            elif is_ok:
+                node_tag = "ok"
+            else:
+                node_tag = "info"
+
+            self.debug_text.insert(tk.END, f"{short_name} ", "header")
+            self.debug_text.insert(tk.END, f"({ip})\n", "info")
+
+            for severity, msg in findings:
+                self.debug_text.insert(tk.END, f"  {msg}\n", severity)
+
+            self.debug_text.insert(tk.END, "\n")
+
+        # Summary line
+        if total_errors == 0 and total_warnings == 0:
+            self.debug_text.insert(tk.END, "All nodes healthy\n", "ok")
+        else:
+            summary = []
+            if total_errors:
+                summary.append(f"{total_errors} errors")
+            if total_warnings:
+                summary.append(f"{total_warnings} warnings")
+            self.debug_text.insert(tk.END, f"Found: {', '.join(summary)}\n", "error" if total_errors else "warning")
+
+    def run_gather_debug(self):
+        """Run gatherdebug.sh in background"""
+        if not os.path.exists(GATHERDEBUG_SCRIPT):
+            self.debug_text.insert(tk.END, f"\nERROR: {GATHERDEBUG_SCRIPT} not found\n", "error")
+            return
+
+        self.debug_status_label.config(text="Gathering debug...")
+        self.debug_text.insert(tk.END, f"\nRunning gatherdebug.sh...\n", "header")
+
+        def do_gather():
+            try:
+                result = subprocess.run(
+                    ["bash", GATHERDEBUG_SCRIPT],
+                    capture_output=True, text=True, timeout=300,
+                    cwd=SCRIPT_DIR
+                )
+                output = result.stdout
+                # Find the tarball path in output
+                for line in output.split('\n'):
+                    if "Tarball:" in line:
+                        self.root.after(0, lambda l=line: self.debug_text.insert(tk.END, f"{l.strip()}\n", "ok"))
+                    elif "Debug gathered:" in line:
+                        self.root.after(0, lambda l=line: self.debug_text.insert(tk.END, f"{l.strip()}\n", "info"))
+
+                if result.returncode == 0:
+                    self.root.after(0, lambda: self.debug_status_label.config(text="Gather complete"))
+                else:
+                    self.root.after(0, lambda: self.debug_text.insert(
+                        tk.END, f"gatherdebug.sh failed (rc={result.returncode})\n", "error"))
+                    self.root.after(0, lambda: self.debug_status_label.config(text="Gather failed"))
+            except subprocess.TimeoutExpired:
+                self.root.after(0, lambda: self.debug_text.insert(
+                    tk.END, "gatherdebug.sh timed out (5m)\n", "error"))
+                self.root.after(0, lambda: self.debug_status_label.config(text="Gather timeout"))
+            except Exception as e:
+                self.root.after(0, lambda: self.debug_text.insert(
+                    tk.END, f"Error: {e}\n", "error"))
+
+        threading.Thread(target=do_gather, daemon=True).start()
 
     def start_event_streamer(self):
         """Start background thread for fast event polling"""

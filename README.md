@@ -31,6 +31,7 @@ Agent-based OpenShift installer optimized for local registry at `registry.gw.lo`
 
 - Proxmox VE access (pve.gw.lo)
 - Local registry (registry.gw.lo) with mirrored OCP images
+- [quick-quay](https://github.com/glennswest/quick-quay) project at `../quick-quay` for mirroring releases
 - `oc` CLI tool installed locally
 - SSH access to Proxmox host and registry VM
 - DNS entries for cluster (api.gw.lo, *.apps.gw.lo, etc.)
@@ -38,11 +39,14 @@ Agent-based OpenShift installer optimized for local registry at `registry.gw.lo`
 ## Quick Start
 
 ```bash
-# 1. Mirror release (run once per version) - from quick-quay project
-./mirror.sh 4.18.30
+# 1. Generate secrets (first time only)
+./generate-secrets.sh
 
-# 2. Install cluster
-./install.sh 4.18.30
+# 2. Mirror release (resolves partial versions automatically)
+./mirror.sh 4.18      # Resolves to latest 4.18.x
+
+# 3. Install cluster
+./install.sh 4.18     # Uses same version resolution
 ```
 
 ## Setup
@@ -235,8 +239,37 @@ If `openshift-install` isn't cached on registry, either:
 1. Re-run mirror: `./mirror.sh <version>` (from quick-quay)
 2. Install falls back to local generation automatically
 
+## Version Resolution
+
+Both `mirror.sh` and `install.sh` support partial version specification:
+
+```bash
+./mirror.sh 4.18       # Resolves to latest 4.18.x (e.g., 4.18.30)
+./mirror.sh 4.18.z     # Same as above
+./mirror.sh 4.18.10    # Uses exact version
+
+./install.sh 4.18      # Same resolution logic
+```
+
+Version resolution queries the Quay.io API to find the latest patch release for the specified major.minor version.
+
+## Install History
+
+Installation attempts are tracked in `install-history.json`:
+
+```bash
+# View history via config.sh function
+source config.sh
+show_install_history
+```
+
+Each entry records:
+- Version installed
+- Start/end timestamps
+- Completion status
+
 ## Related Projects
 
 - **qpve**: Traditional (non-agent) OpenShift installation scripts
-- **quick-quay**: Quay registry setup and release mirroring
+- **quick-quay**: Quay registry setup and release mirroring ([GitHub](https://github.com/glennswest/quick-quay))
 - **pdnsloadbalancer**: PowerDNS-based load balancer for API/ingress endpoints ([GitHub](https://github.com/glennswest/pdnsloadbalancer))

@@ -170,7 +170,7 @@ generate_iso_remote() {
     local install_config="$2"
     local agent_config="$3"
     local registry_host="${LOCAL_REGISTRY%%:*}"
-    local remote_dir="/tmp/agent-install-$$"
+    local remote_dir="/tmp/agent-install"
     local cache_dir="/var/lib/openshift-cache"
     local SSH_OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR"
 
@@ -183,8 +183,8 @@ generate_iso_remote() {
         return 1
     fi
 
-    # Create remote working directory
-    ssh $SSH_OPTS "root@${registry_host}" "mkdir -p ${remote_dir}"
+    # Create remote working directory (clean slate each run)
+    ssh $SSH_OPTS "root@${registry_host}" "rm -rf ${remote_dir} && mkdir -p ${remote_dir}"
 
     # Copy configs to registry (small files, fast)
     # Use -O for legacy SCP protocol (SFTP not enabled on registry)
@@ -242,9 +242,22 @@ generate_iso_remote() {
     fi
     echo "Source ISO checksum: ${source_checksum}"
 
-    # Copy ISO directly to Proxmox (local network, fast)
-    echo "Copying ISO to Proxmox..."
-    ssh $SSH_OPTS "root@${registry_host}" "scp -O -o StrictHostKeyChecking=no ${remote_dir}/agent.x86_64.iso ${PVE_USER}@${PVE_HOST}:${ISO_PATH}/${ISO_NAME}"
+    # Serve ISO via HTTP and download on Proxmox (no registry->PVE SSH needed)
+    echo "Serving ISO via HTTP from registry..."
+    local http_port=8888
+    ssh $SSH_OPTS "root@${registry_host}" "kill \$(lsof -ti :${http_port}) 2>/dev/null; cd ${remote_dir} && nohup python3 -m http.server ${http_port} --bind 0.0.0.0 </dev/null >/dev/null 2>&1 & sleep 1 && echo READY"
+
+    echo "Downloading ISO on Proxmox via HTTP..."
+    ssh $SSH_OPTS "${PVE_USER}@${PVE_HOST}" "curl -sf http://${registry_host}:${http_port}/agent.x86_64.iso -o ${ISO_PATH}/${ISO_NAME}"
+    local dl_result=$?
+
+    # Stop the HTTP server
+    ssh $SSH_OPTS "root@${registry_host}" "kill \$(lsof -ti :${http_port}) 2>/dev/null" || true
+
+    if [ $dl_result -ne 0 ]; then
+        echo "ERROR: Failed to download ISO on Proxmox"
+        return 1
+    fi
 
     # Verify ISO checksum on Proxmox matches source (AFTER copy)
     echo "Verifying ISO checksum on Proxmox..."
@@ -257,16 +270,10 @@ generate_iso_remote() {
     echo "Destination ISO checksum: ${dest_checksum}"
 
     if [ "$source_checksum" != "$dest_checksum" ]; then
-        echo "ERROR: ISO checksum mismatch after copy!"
+        echo "ERROR: ISO checksum mismatch after download!"
         echo "  Source (registry): ${source_checksum}"
         echo "  Dest (Proxmox):    ${dest_checksum}"
-        echo "Retrying copy..."
-        ssh $SSH_OPTS "root@${registry_host}" "scp -O -o StrictHostKeyChecking=no ${remote_dir}/agent.x86_64.iso ${PVE_USER}@${PVE_HOST}:${ISO_PATH}/${ISO_NAME}"
-        dest_checksum=$(ssh $SSH_OPTS "${PVE_USER}@${PVE_HOST}" "sha256sum ${ISO_PATH}/${ISO_NAME} | cut -d' ' -f1")
-        if [ "$source_checksum" != "$dest_checksum" ]; then
-            echo "ERROR: ISO checksum still mismatched after retry!"
-            return 2  # Return 2 for checksum errors (don't fallback)
-        fi
+        return 2  # Return 2 for checksum errors (don't fallback)
     fi
     echo "ISO checksum verified: OK"
 
