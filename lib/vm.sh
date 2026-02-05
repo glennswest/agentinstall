@@ -141,7 +141,7 @@ create_vm_iso() {
         --memory ${memory} \
         --net0 bridge=${NETWORK_BRIDGE},virtio=${mac} \
         --ide2 local:iso/${ISO_NAME},media=cdrom \
-        --bootdisk scsi0 \
+        --boot order=scsi0\\;ide2 \
         --scsihw virtio-scsi-single \
         --scsi0 ${LVM_STORAGE}:${lvmname},size=${disksize}"
 }
@@ -190,6 +190,24 @@ generate_iso_remote() {
     # Use -O for legacy SCP protocol (SFTP not enabled on registry)
     scp -O -q $SSH_OPTS "$install_config" "root@${registry_host}:${remote_dir}/install-config.yaml"
     scp -O -q $SSH_OPTS "$agent_config" "root@${registry_host}:${remote_dir}/agent-config.yaml"
+
+    # Pre-populate agent image cache with cached ISO (skips slow extraction)
+    echo "Checking for cached CoreOS ISO..."
+    local iso_cached
+    iso_cached=$(ssh $SSH_OPTS "root@${registry_host}" "
+        if [ -f ${cache_dir}/coreos-${version}-x86_64.iso ]; then
+            mkdir -p /root/.cache/agent/image_cache
+            cp ${cache_dir}/coreos-${version}-x86_64.iso /root/.cache/agent/image_cache/coreos-x86_64.iso
+            echo 'OK'
+        else
+            echo 'MISS'
+        fi
+    ")
+    if [[ "$iso_cached" == "OK" ]]; then
+        echo "  Using cached ISO: coreos-${version}-x86_64.iso"
+    else
+        echo "  No cached ISO found, openshift-install will extract it"
+    fi
 
     # Generate ISO on registry server
     echo "Running openshift-install on registry server..."
@@ -258,9 +276,15 @@ generate_iso_remote() {
     # Copy all generated files back to local machine (needed for wait-for commands)
     echo "Retrieving generated assets..."
     mkdir -p "${SCRIPT_DIR}/gw/auth"
-    scp -O -q -r $SSH_OPTS "root@${registry_host}:${remote_dir}/auth/" "${SCRIPT_DIR}/gw/"
-    scp -O -q $SSH_OPTS "root@${registry_host}:${remote_dir}/.openshift_install_state.json" "${SCRIPT_DIR}/gw/"
-    scp -O -q $SSH_OPTS "root@${registry_host}:${remote_dir}/rendezvousIP" "${SCRIPT_DIR}/gw/" 2>/dev/null || true
+    ssh $SSH_OPTS "root@${registry_host}" \
+        "tar cf - -C ${remote_dir} auth .openshift_install_state.json" \
+        | tar xf - -C "${SCRIPT_DIR}/gw/"
+
+    # Verify assets were retrieved
+    if [ ! -f "${SCRIPT_DIR}/gw/auth/kubeconfig" ]; then
+        echo "ERROR: Failed to retrieve auth assets from registry"
+        return 1
+    fi
 
     # Cleanup remote directory
     ssh $SSH_OPTS "root@${registry_host}" "rm -rf ${remote_dir}"
