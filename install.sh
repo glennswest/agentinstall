@@ -85,17 +85,17 @@ fi
 
 # Deep verification: check all release image blobs exist in registry
 # Catches the case where manifests exist but underlying layer blobs are missing
+# Runs locally - uses registry V2 API for manifests and HTTP storage endpoint for disk checks
 echo "  Verifying release image blobs..."
 BLOB_EXIT=0
-BLOB_OUTPUT=$(cat <<'BLOBCHECK' | ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR \
-    "root@${REGISTRY_HOST}" "python3 - '${RELEASE_IMAGE}' '${LOCAL_REGISTRY}' '${LOCAL_REPOSITORY}'"
+BLOB_OUTPUT=$(python3 - "${RELEASE_IMAGE}" "${LOCAL_REGISTRY}" "${LOCAL_REPOSITORY}" "${SCRIPT_DIR}/pullsecret.json" <<'BLOBCHECK'
 import sys, json, subprocess, ssl, traceback, re
 import urllib.request, urllib.error, urllib.parse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-release_image, registry, repo = sys.argv[1], sys.argv[2], sys.argv[3]
+release_image, registry, repo, pull_secret_path = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
 
-with open('/root/pullsecret-combined.json') as f:
+with open(pull_secret_path) as f:
     ps = json.load(f)
 basic_auth = None
 for k in ps.get('auths', {}):
@@ -201,7 +201,7 @@ def api(path, method='HEAD'):
 # Get image pullspecs from release
 r = subprocess.run(
     ['oc', 'adm', 'release', 'info', release_image,
-     '--pullspecs', '--registry-config=/root/pullsecret-combined.json',
+     '--pullspecs', f'--registry-config={pull_secret_path}',
      '--insecure'],
     capture_output=True, text=True)
 if r.returncode != 0:
@@ -291,16 +291,30 @@ if not blobs and digests:
 
 print(f'  Verifying {len(blobs)} unique blobs on disk...', file=sys.stderr)
 
-# Check blob files exist on disk (HTTP HEAD lies - quay returns 200 even for missing files)
-import os
-storage_root = '/var/lib/quay/storage'
+# Check blob files exist on disk via HTTP HEAD to nginx storage endpoint.
+# Quay V2 API HEAD lies (returns 200 for DB refs even when file is missing).
+# The nginx endpoint serves files directly from storage, so 404 = file missing.
+storage_url = f'http://{registry}/storage'
 missing = []
-for b in blobs:
-    # digest format: sha256:abc123... -> storage path: sha256/ab/abc123...
+
+def check_blob_exists(b):
     algo, hashval = b.split(':', 1)
-    blob_path = os.path.join(storage_root, algo, hashval[:2], hashval)
-    if not os.path.exists(blob_path):
-        missing.append(b)
+    url = f'{storage_url}/{algo}/{hashval[:2]}/{hashval}'
+    req = urllib.request.Request(url, method='HEAD')
+    try:
+        resp = urllib.request.urlopen(req, timeout=5)
+        return b, resp.status == 200
+    except urllib.error.HTTPError:
+        return b, False
+    except Exception:
+        return b, False
+
+with ThreadPoolExecutor(max_workers=20) as pool:
+    futs = {pool.submit(check_blob_exists, b): b for b in blobs}
+    for f in as_completed(futs):
+        b, exists = f.result()
+        if not exists:
+            missing.append(b)
 
 if errors:
     for e in errors:
@@ -322,59 +336,104 @@ if [ $BLOB_EXIT -ne 0 ]; then
     echo ""
     echo "  Found ${MISSING_COUNT} missing blob(s) on disk - attempting auto-repair..."
 
-    # For each missing blob, download from upstream and place in quay storage
-    REPAIR_FAILED=0
-    UPSTREAM_REGISTRY="quay.io"
+    # Download blobs from quay.io and re-push to local registry via V2 API.
+    # Quay dedup may skip writes for blobs it thinks it has (DB ref exists but
+    # file is missing). To force a re-write, we delete the blob ref first via
+    # the registry API, then upload fresh.
     UPSTREAM_REPO="openshift-release-dev/ocp-v4.0-art-dev"
+    PULL_SECRET="${SCRIPT_DIR}/pullsecret.json"
+    REPAIR_FAILED=0
+    REPAIR_OK=0
+
+    # Get upstream auth token from quay.io (realm is quay.io/v2/auth, NOT auth.quay.io)
+    UPSTREAM_AUTH=$(python3 -c "import json; ps=json.load(open('${PULL_SECRET}')); print(ps['auths'].get('quay.io',{}).get('auth',''))" 2>/dev/null)
+    UPSTREAM_TOKEN=$(curl -sL -H "Authorization: Basic ${UPSTREAM_AUTH}" \
+        "https://quay.io/v2/auth?service=quay.io&scope=repository:${UPSTREAM_REPO}:pull" 2>/dev/null \
+        | python3 -c "import sys,json; print(json.load(sys.stdin).get('token',''))" 2>/dev/null) || true
+
+    if [ -z "$UPSTREAM_TOKEN" ]; then
+        echo "  ERROR: Cannot get upstream auth token from quay.io"
+        echo "  Re-run: ./mirror.sh ${OCP_VERSION} --wipe"
+        exit 1
+    fi
+
+    # Get local registry push token
+    LOCAL_AUTH=$(python3 -c "import json; ps=json.load(open('${PULL_SECRET}')); print(ps['auths'].get('${LOCAL_REGISTRY%%:*}',ps['auths'].get('${LOCAL_REGISTRY}',{})).get('auth',''))" 2>/dev/null)
+    LOCAL_REPO="${LOCAL_REGISTRY%%:*}"
+    LOCAL_TOKEN=$(curl -sk -H "Authorization: Basic ${LOCAL_AUTH}" \
+        "https://${LOCAL_REPO}/v2/auth?service=${LOCAL_REPO}&scope=repository:openshift/release:pull,push" 2>/dev/null \
+        | python3 -c "import sys,json; print(json.load(sys.stdin).get('token',''))" 2>/dev/null) || true
+
+    TMPDIR_REPAIR=$(mktemp -d)
+    trap "rm -rf ${TMPDIR_REPAIR}" EXIT
+
     while IFS= read -r blob_digest; do
         [ -z "$blob_digest" ] && continue
         algo="${blob_digest%%:*}"
         hashval="${blob_digest#*:}"
-        storage_dir="/var/lib/quay/storage/${algo}/${hashval:0:2}"
-        storage_path="${storage_dir}/${hashval}"
+        local_file="${TMPDIR_REPAIR}/${hashval}"
         echo "  Repairing ${hashval:0:16}..."
 
-        # Download blob from upstream via registry API and place directly in storage
-        REPAIR_OK=$(ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR \
-            "root@${REGISTRY_HOST}" "
-            mkdir -p '${storage_dir}'
-            # Get upstream auth token
-            TOKEN=\$(curl -sL 'https://auth.quay.io/v2/auth?service=quay.io&scope=repository:${UPSTREAM_REPO}:pull' \
-                --authfile /root/pullsecret-combined.json 2>/dev/null | python3 -c \"import sys,json; print(json.load(sys.stdin).get('token',''))\" 2>/dev/null) || true
-            if [ -z \"\$TOKEN\" ]; then
-                # Try with basic auth from pull secret
-                AUTH=\$(python3 -c \"import json; ps=json.load(open('/root/pullsecret-combined.json')); print(ps['auths'].get('quay.io',{}).get('auth',''))\" 2>/dev/null)
-                TOKEN=\$(curl -sL -H \"Authorization: Basic \$AUTH\" 'https://auth.quay.io/v2/auth?service=quay.io&scope=repository:${UPSTREAM_REPO}:pull' 2>/dev/null | python3 -c \"import sys,json; print(json.load(sys.stdin).get('token',''))\" 2>/dev/null) || true
-            fi
-            if [ -n \"\$TOKEN\" ]; then
-                HTTP_CODE=\$(curl -sL -o '${storage_path}' -w '%{http_code}' \
-                    -H \"Authorization: Bearer \$TOKEN\" \
-                    'https://quay.io/v2/${UPSTREAM_REPO}/blobs/${blob_digest}')
-                if [ \"\$HTTP_CODE\" = '200' ] && [ -f '${storage_path}' ] && [ -s '${storage_path}' ]; then
-                    # Verify downloaded blob matches expected digest
-                    ACTUAL=\$(sha256sum '${storage_path}' | cut -d' ' -f1)
-                    if [ \"\$ACTUAL\" = '${hashval}' ]; then
-                        echo 'OK'
+        # Download blob from quay.io
+        HTTP_CODE=$(curl -sL -o "${local_file}" -w '%{http_code}' \
+            -H "Authorization: Bearer ${UPSTREAM_TOKEN}" \
+            "https://quay.io/v2/${UPSTREAM_REPO}/blobs/${blob_digest}" 2>/dev/null)
+
+        if [ "$HTTP_CODE" = "200" ] && [ -f "${local_file}" ] && [ -s "${local_file}" ]; then
+            # Verify checksum
+            ACTUAL=$(shasum -a 256 "${local_file}" | cut -d' ' -f1)
+            if [ "$ACTUAL" = "${hashval}" ]; then
+                BLOB_SIZE=$(stat -f%z "${local_file}" 2>/dev/null || stat -c%s "${local_file}" 2>/dev/null)
+                # Delete stale blob ref from local registry so re-upload writes the file
+                curl -sk -X DELETE -H "Authorization: Bearer ${LOCAL_TOKEN}" \
+                    "https://${LOCAL_REPO}/v2/openshift/release/blobs/${blob_digest}" >/dev/null 2>&1 || true
+
+                # Upload blob via V2 API: initiate upload, then PUT with digest
+                UPLOAD_URL=$(curl -sk -D- -o/dev/null -X POST \
+                    -H "Authorization: Bearer ${LOCAL_TOKEN}" \
+                    "https://${LOCAL_REPO}/v2/openshift/release/blobs/uploads/" 2>/dev/null \
+                    | grep -i "^Location:" | tr -d '\r' | awk '{print $2}')
+
+                if [ -n "$UPLOAD_URL" ]; then
+                    # Monolithic upload: PUT the blob with digest query param
+                    # Use ? or & depending on whether URL already has query params
+                    if echo "$UPLOAD_URL" | grep -q '?'; then
+                        PUSH_URL="${UPLOAD_URL}&digest=${blob_digest}"
                     else
-                        rm -f '${storage_path}'
-                        echo 'CHECKSUM_MISMATCH'
+                        PUSH_URL="${UPLOAD_URL}?digest=${blob_digest}"
+                    fi
+                    PUSH_CODE=$(curl -sk -w '%{http_code}' -o/dev/null \
+                        -X PUT \
+                        -H "Authorization: Bearer ${LOCAL_TOKEN}" \
+                        -H "Content-Type: application/octet-stream" \
+                        -H "Content-Length: ${BLOB_SIZE}" \
+                        --data-binary "@${local_file}" \
+                        "${PUSH_URL}" 2>/dev/null)
+
+                    if [ "$PUSH_CODE" = "201" ] || [ "$PUSH_CODE" = "202" ]; then
+                        echo "    ✓ Repaired ($(du -h "${local_file}" | cut -f1))"
+                        REPAIR_OK=$((REPAIR_OK + 1))
+                    else
+                        echo "    ✗ Push to registry failed (HTTP ${PUSH_CODE})"
+                        REPAIR_FAILED=$((REPAIR_FAILED + 1))
                     fi
                 else
-                    rm -f '${storage_path}'
-                    echo 'DOWNLOAD_FAILED'
+                    echo "    ✗ Failed to initiate upload session"
+                    REPAIR_FAILED=$((REPAIR_FAILED + 1))
                 fi
             else
-                echo 'AUTH_FAILED'
+                echo "    ✗ Checksum mismatch"
+                REPAIR_FAILED=$((REPAIR_FAILED + 1))
             fi
-        " 2>/dev/null)
-
-        if [ "$REPAIR_OK" = "OK" ]; then
-            echo "    ✓ Repaired"
         else
-            echo "    ✗ Repair failed: ${REPAIR_OK}"
+            echo "    ✗ Download failed (HTTP ${HTTP_CODE})"
             REPAIR_FAILED=$((REPAIR_FAILED + 1))
         fi
+        rm -f "${local_file}"
     done <<< "$MISSING_BLOBS"
+
+    rm -rf "${TMPDIR_REPAIR}"
+    trap - EXIT
 
     if [ $REPAIR_FAILED -gt 0 ]; then
         echo ""
@@ -382,7 +441,7 @@ if [ $BLOB_EXIT -ne 0 ]; then
         echo "Re-run: ./mirror.sh ${OCP_VERSION} --wipe"
         exit 1
     fi
-    echo "  ✓ All missing blobs repaired from upstream"
+    echo "  ✓ All ${REPAIR_OK} missing blobs repaired from upstream"
 fi
 
 BLOB_COUNT=$(echo "$BLOB_OUTPUT" | grep "^VERIFIED:" | cut -d: -f2)
@@ -390,7 +449,7 @@ if [ -n "$BLOB_COUNT" ]; then
     echo "  ✓ All ${BLOB_COUNT} blobs verified intact"
 else
     # Blobs were repaired, count from output
-    TOTAL_BLOBS=$(echo "$BLOB_OUTPUT" | grep -oP 'Verifying \K[0-9]+')
+    TOTAL_BLOBS=$(echo "$BLOB_OUTPUT" | sed -n 's/.*Verifying \([0-9]*\).*/\1/p')
     echo "  ✓ All ${TOTAL_BLOBS} blobs verified (with repairs)"
 fi
 

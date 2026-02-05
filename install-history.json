@@ -51,8 +51,552 @@
     "version": "4.18.30",
     "start_time": "2026-01-07T23:55:22Z",
     "start_date": "2026-01-07",
+    "end_time": "2026-01-08T00:03:19Z",
+    "end_date": "2026-01-07",
+    "completed": false
+  },
+  {
+    "version": "4.18.30",
+    "start_time": "2026-01-08T00:04:24Z",
+    "start_date": "2026-01-07",
     "end_time": null,
     "end_date": null,
     "completed": false
+  },
+  {
+    "version": "4.18.30",
+    "start_time": "2026-01-08T00:26:31Z",
+    "start_date": "2026-01-07",
+    "end_time": "2026-01-08T01:14:53Z",
+    "end_date": "2026-01-07",
+    "completed": false
+  },
+  {
+    "version": "4.18.30",
+    "start_time": "2026-01-08T01:15:12Z",
+    "start_date": "2026-01-07",
+    "end_time": "2026-01-08T01:38:32Z",
+    "end_date": "2026-01-07",
+    "completed": false
+  },
+  {
+    "version": "4.18.30",
+    "start_time": "2026-01-08T01:39:30Z",
+    "start_date": "2026-01-07",
+    "end_time": "2026-01-08T01:40:10Z",
+    "end_date": "2026-01-07",
+    "completed": false
+  },
+  {
+    "version": "4.18.30",
+    "start_time": "2026-01-08T01:43:20Z",
+    "start_date": "2026-01-07",
+    "end_time": "2026-01-08T01:55:22Z",
+    "end_date": "2026-01-07",
+    "completed": false
+  },
+  {
+    "version": "4.18.30",
+    "start_time": "2026-01-08T02:04:30Z",
+    "start_date": "2026-01-07",
+    "end_time": "2026-01-08T02:14:29Z",
+    "end_date": "2026-01-07",
+    "completed": false
+  },
+  {
+    "version": "4.18.30",
+    "start_time": "2026-01-08T02:33:19Z",
+    "start_date": "2026-01-07",
+    "end_time": "2026-01-08T02:36:16Z",
+    "end_date": "2026-01-07",
+    "completed": false
+  },
+  {
+    "version": "4.18.30",
+    "start_time": "2026-01-08T02:37:09Z",
+    "start_date": "2026-01-07",
+    "end_time": "2026-01-08T02:42:56Z",
+    "end_date": "2026-01-07",
+    "completed": false
+  },
+  {
+    "version": "4.18.30",
+    "start_time": "2026-01-08T02:51:01Z",
+    "start_date": "2026-01-07",
+    "end_time": "2026-01-08T02:52:39Z",
+    "end_date": "2026-01-07",
+    "completed": false
+  },
+  {
+    "version": "4.18.30",
+    "start_time": "2026-01-08T02:53:34Z",
+    "start_date": "2026-01-07",
+    "end_time": "2026-01-08T03:10:22Z",
+    "end_date": "2026-01-07",
+    "completed": false
+  },
+  {
+    "version": "4.18.30",
+    "start_time": "2026-01-08T03:29:16Z",
+    "start_date": "2026-01-07",
+    "end_time": null,
+    "end_date": null,
+    "completed": false
+  },
+  {
+    "version": "4.18.30",
+    "start_time": "2026-01-08T13:36:01Z",
+    "start_date": "2026-01-08",
+    "end_time": "2026-01-08T14:13:06Z",
+    "end_date": "2026-01-08",
+    "completed": true
+  },
+  {
+    "version": "4.20.4",
+    "start_time": "2026-01-08T14:32:38Z",
+    "start_date": "2026-01-08",
+    "end_time": "2026-01-08T15:08:26Z",
+    "end_date": "2026-01-08",
+    "completed": false
+  },
+  {
+    "version": "4.20.4",
+    "start_time": "2026-01-08T15:20:34Z",
+    "start_date": "2026-01-08",
+    "end_time": "2026-01-08T15:41:34Z",
+    "end_date": "2026-01-08",
+    "completed": false
+  },
+  {
+    "version": "4.20.4",
+    "start_time": "2026-01-08T15:43:23Z",
+    "start_date": "2026-01-08",
+    "end_time": "2026-01-08T15:54:57Z",
+    "end_date": "2026-01-08",
+    "completed": false
+  },
+  {
+    "version": "4.20.4",
+    "start_time": "2026-01-08T16:43:02Z",
+    "start_date": "2026-01-08",
+    "end_time": "2026-01-08T17:27:30Z",
+    "end_date": "2026-01-08",
+    "completed": false
+  },
+  {
+    "version": "4.20.4",
+    "start_time": "2026-01-08T17:49:36Z",
+    "start_date": "2026-01-08",
+    "end_time": null,
+    "end_date": null,
+    "completed": false
+  },
+  {
+    "version": "4.20.4",
+    "start_time": "2026-01-08T18:25:58Z",
+    "start_date": "2026-01-08",
+    "end_time": "2026-01-08T18:52:25Z",
+    "end_date": "2026-01-08",
+    "completed": false
+  },
+  {
+    "version": "4.20.4.1",
+    "start_time": "2026-01-08T18:56:22Z",
+    "start_date": "2026-01-08",
+    "end_time": "2026-01-08T19:24:56Z",
+    "end_date": "2026-01-08",
+    "completed": false
+  },
+  {
+    "version": "4.20.4.2",
+    "start_time": "2026-01-08T19:26:37Z",
+    "start_date": "2026-01-08",
+    "end_time": "2026-01-08T19:39:25Z",
+    "end_date": "2026-01-08",
+    "completed": false
+  },
+  {
+    "version": "4.20.4",
+    "start_time": "2026-01-08T19:41:18Z",
+    "start_date": "2026-01-08",
+    "end_time": "2026-01-08T19:49:30Z",
+    "end_date": "2026-01-08",
+    "completed": false
+  },
+  {
+    "version": "4.20.4",
+    "start_time": "2026-01-18T13:17:05Z",
+    "start_date": "2026-01-18",
+    "end_time": "2026-01-18T13:18:20Z",
+    "end_date": "2026-01-18",
+    "completed": false
+  },
+  {
+    "version": "4.18",
+    "start_time": "2026-02-03T19:23:49Z",
+    "start_date": "2026-02-03",
+    "end_time": null,
+    "end_date": null,
+    "completed": false
+  },
+  {
+    "version": "4.18.32",
+    "start_time": "2026-02-03T20:09:55Z",
+    "start_date": "2026-02-03",
+    "end_time": "2026-02-03T20:10:03Z",
+    "end_date": "2026-02-03",
+    "completed": false
+  },
+  {
+    "version": "4.18.32",
+    "start_time": "2026-02-03T20:21:21Z",
+    "start_date": "2026-02-03",
+    "end_time": "2026-02-03T20:21:31Z",
+    "end_date": "2026-02-03",
+    "completed": false
+  },
+  {
+    "version": "4.18.32",
+    "start_time": "2026-02-03T20:25:14Z",
+    "start_date": "2026-02-03",
+    "end_time": "2026-02-03T20:28:17Z",
+    "end_date": "2026-02-03",
+    "completed": false
+  },
+  {
+    "version": "4.18.32",
+    "start_time": "2026-02-03T20:36:54Z",
+    "start_date": "2026-02-03",
+    "end_time": "2026-02-03T20:47:13Z",
+    "end_date": "2026-02-03",
+    "completed": false
+  },
+  {
+    "version": "4.18.32",
+    "start_time": "2026-02-03T20:52:00Z",
+    "start_date": "2026-02-03",
+    "end_time": "2026-02-03T20:56:04Z",
+    "end_date": "2026-02-03",
+    "completed": false
+  },
+  {
+    "version": "4.18.32",
+    "start_time": "2026-02-03T21:04:00Z",
+    "start_date": "2026-02-03",
+    "end_time": "2026-02-03T21:05:36Z",
+    "end_date": "2026-02-03",
+    "completed": false
+  },
+  {
+    "version": "4.18.32",
+    "start_time": "2026-02-03T22:00:42Z",
+    "start_date": "2026-02-03",
+    "end_time": "2026-02-03T22:24:54Z",
+    "end_date": "2026-02-03",
+    "completed": false
+  },
+  {
+    "version": "4.18.32",
+    "start_time": "2026-02-03T22:39:40Z",
+    "start_date": "2026-02-03",
+    "end_time": "2026-02-03T23:41:29Z",
+    "end_date": "2026-02-03",
+    "completed": false
+  },
+  {
+    "version": "4.18.32",
+    "start_time": "2026-02-04T02:20:11Z",
+    "start_date": "2026-02-03",
+    "end_time": "2026-02-04T03:22:21Z",
+    "end_date": "2026-02-03",
+    "completed": false
+  },
+  {
+    "version": "4.18.32",
+    "start_time": "2026-02-04T14:49:08Z",
+    "start_date": "2026-02-04",
+    "end_time": "2026-02-04T15:39:43Z",
+    "end_date": "2026-02-04",
+    "completed": false
+  },
+  {
+    "version": "4.18.32",
+    "start_time": "2026-02-04T15:57:54Z",
+    "start_date": "2026-02-04",
+    "end_time": "2026-02-04T16:06:09Z",
+    "end_date": "2026-02-04",
+    "completed": false
+  },
+  {
+    "version": "4.18.32",
+    "start_time": "2026-02-04T16:06:10Z",
+    "start_date": "2026-02-04",
+    "end_time": "2026-02-04T16:08:56Z",
+    "end_date": "2026-02-04",
+    "completed": false
+  },
+  {
+    "version": "4.18.32",
+    "start_time": "2026-02-04T16:29:48Z",
+    "start_date": "2026-02-04",
+    "end_time": "2026-02-04T16:49:52Z",
+    "end_date": "2026-02-04",
+    "completed": false
+  },
+  {
+    "version": "4.18.32",
+    "start_time": "2026-02-04T16:49:53Z",
+    "start_date": "2026-02-04",
+    "end_time": "2026-02-04T17:51:54Z",
+    "end_date": "2026-02-04",
+    "completed": false
+  },
+  {
+    "version": "4.18.32",
+    "start_time": "2026-02-04T18:00:42Z",
+    "start_date": "2026-02-04",
+    "end_time": "2026-02-04T19:02:42Z",
+    "end_date": "2026-02-04",
+    "completed": false
+  },
+  {
+    "version": "4.18.32",
+    "start_time": "2026-02-04T19:38:14Z",
+    "start_date": "2026-02-04",
+    "end_time": "2026-02-04T19:43:32Z",
+    "end_date": "2026-02-04",
+    "completed": false
+  },
+  {
+    "version": "4.18.32",
+    "start_time": "2026-02-04T20:15:33Z",
+    "start_date": "2026-02-04",
+    "end_time": "2026-02-04T20:15:49Z",
+    "end_date": "2026-02-04",
+    "completed": false
+  },
+  {
+    "version": "4.18.32",
+    "start_time": "2026-02-04T20:23:01Z",
+    "start_date": "2026-02-04",
+    "end_time": "2026-02-04T20:23:11Z",
+    "end_date": "2026-02-04",
+    "completed": false
+  },
+  {
+    "version": "4.18.32",
+    "start_time": "2026-02-04T20:28:08Z",
+    "start_date": "2026-02-04",
+    "end_time": "2026-02-04T20:28:17Z",
+    "end_date": "2026-02-04",
+    "completed": false
+  },
+  {
+    "version": "4.18.32",
+    "start_time": "2026-02-04T20:36:06Z",
+    "start_date": "2026-02-04",
+    "end_time": "2026-02-04T20:36:14Z",
+    "end_date": "2026-02-04",
+    "completed": false
+  },
+  {
+    "version": "4.18.32",
+    "start_time": "2026-02-04T20:40:49Z",
+    "start_date": "2026-02-04",
+    "end_time": "2026-02-04T20:49:25Z",
+    "end_date": "2026-02-04",
+    "completed": false
+  },
+  {
+    "version": "4.18.32",
+    "start_time": "2026-02-04T23:35:21Z",
+    "start_date": "2026-02-04",
+    "end_time": "2026-02-04T23:37:16Z",
+    "end_date": "2026-02-04",
+    "completed": false
+  },
+  {
+    "version": "4.18.32",
+    "start_time": "2026-02-04T23:54:45Z",
+    "start_date": "2026-02-04",
+    "end_time": "2026-02-05T00:25:43Z",
+    "end_date": "2026-02-04",
+    "completed": false
+  },
+  {
+    "version": "4.18.32",
+    "start_time": "2026-02-05T00:26:02Z",
+    "start_date": "2026-02-04",
+    "end_time": "2026-02-05T00:26:27Z",
+    "end_date": "2026-02-04",
+    "completed": false
+  },
+  {
+    "version": "4.18.32",
+    "start_time": "2026-02-05T00:26:59Z",
+    "start_date": "2026-02-04",
+    "end_time": null,
+    "end_date": null,
+    "completed": false
+  },
+  {
+    "version": "4.18.32",
+    "start_time": "2026-02-05T00:28:43Z",
+    "start_date": "2026-02-04",
+    "end_time": "2026-02-05T00:29:38Z",
+    "end_date": "2026-02-04",
+    "completed": false
+  },
+  {
+    "version": "4.18.32",
+    "start_time": "2026-02-05T00:38:48Z",
+    "start_date": "2026-02-04",
+    "end_time": "2026-02-05T01:17:52Z",
+    "end_date": "2026-02-04",
+    "completed": false
+  },
+  {
+    "version": "4.18.32",
+    "start_time": "2026-02-05T01:18:01Z",
+    "start_date": "2026-02-04",
+    "end_time": "2026-02-05T02:01:26Z",
+    "end_date": "2026-02-04",
+    "completed": true
+  },
+  {
+    "version": "4.18.32",
+    "start_time": "2026-02-05T02:03:20Z",
+    "start_date": "2026-02-04",
+    "end_time": "2026-02-05T02:03:39Z",
+    "end_date": "2026-02-04",
+    "completed": false
+  },
+  {
+    "version": "4.18.32",
+    "start_time": "2026-02-05T02:04:52Z",
+    "start_date": "2026-02-04",
+    "end_time": "2026-02-05T02:05:09Z",
+    "end_date": "2026-02-04",
+    "completed": false
+  },
+  {
+    "version": "4.18.32",
+    "start_time": "2026-02-05T02:07:58Z",
+    "start_date": "2026-02-04",
+    "end_time": "2026-02-05T02:23:28Z",
+    "end_date": "2026-02-04",
+    "completed": false
+  },
+  {
+    "version": "4.18.32",
+    "start_time": "2026-02-05T02:43:44Z",
+    "start_date": "2026-02-04",
+    "end_time": "2026-02-05T02:50:46Z",
+    "end_date": "2026-02-04",
+    "completed": false
+  },
+  {
+    "version": "4.18.32",
+    "start_time": "2026-02-05T02:50:47Z",
+    "start_date": "2026-02-04",
+    "end_time": "2026-02-05T02:52:30Z",
+    "end_date": "2026-02-04",
+    "completed": false
+  },
+  {
+    "version": "4.18.32",
+    "start_time": "2026-02-05T02:54:20Z",
+    "start_date": "2026-02-04",
+    "end_time": "2026-02-05T02:54:50Z",
+    "end_date": "2026-02-04",
+    "completed": false
+  },
+  {
+    "version": "4.18.32",
+    "start_time": "2026-02-05T02:57:29Z",
+    "start_date": "2026-02-04",
+    "end_time": "2026-02-05T03:01:55Z",
+    "end_date": "2026-02-04",
+    "completed": false
+  },
+  {
+    "version": "4.18.32",
+    "start_time": "2026-02-05T03:02:00Z",
+    "start_date": "2026-02-04",
+    "end_time": "2026-02-05T03:38:37Z",
+    "end_date": "2026-02-04",
+    "completed": true
+  },
+  {
+    "version": "4.18.32",
+    "start_time": "2026-02-05T12:55:52Z",
+    "start_date": "2026-02-05",
+    "end_time": "2026-02-05T12:56:08Z",
+    "end_date": "2026-02-05",
+    "completed": false
+  },
+  {
+    "version": "4.21.0",
+    "start_time": "2026-02-05T16:57:05Z",
+    "start_date": "2026-02-05",
+    "end_time": "2026-02-05T16:57:16Z",
+    "end_date": "2026-02-05",
+    "completed": false
+  },
+  {
+    "version": "4.21.0",
+    "start_time": "2026-02-05T17:08:22Z",
+    "start_date": "2026-02-05",
+    "end_time": null,
+    "end_date": null,
+    "completed": false
+  },
+  {
+    "version": "4.21.0",
+    "start_time": "2026-02-05T17:25:41Z",
+    "start_date": "2026-02-05",
+    "end_time": null,
+    "end_date": null,
+    "completed": false
+  },
+  {
+    "version": "4.21.0",
+    "start_time": "2026-02-05T17:26:45Z",
+    "start_date": "2026-02-05",
+    "end_time": "2026-02-05T17:26:57Z",
+    "end_date": "2026-02-05",
+    "completed": false
+  },
+  {
+    "version": "4.21.0",
+    "start_time": "2026-02-05T18:07:19Z",
+    "start_date": "2026-02-05",
+    "end_time": null,
+    "end_date": null,
+    "completed": false
+  },
+  {
+    "version": "4.21.0",
+    "start_time": "2026-02-05T18:10:36Z",
+    "start_date": "2026-02-05",
+    "end_time": null,
+    "end_date": null,
+    "completed": false
+  },
+  {
+    "version": "4.21.0",
+    "start_time": "2026-02-05T18:12:18Z",
+    "start_date": "2026-02-05",
+    "end_time": null,
+    "end_date": null,
+    "completed": false
+  },
+  {
+    "version": "4.21.0",
+    "start_time": "2026-02-05T18:14:37Z",
+    "start_date": "2026-02-05",
+    "end_time": "2026-02-05T18:56:03Z",
+    "end_date": "2026-02-05",
+    "completed": true
   }
 ]
