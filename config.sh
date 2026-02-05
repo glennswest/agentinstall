@@ -1,24 +1,17 @@
 #!/bin/bash
 # Configuration for agent-based OpenShift installation
-# Uses local registry at registry.gw.lo
+# Uses FastRegistry at fastregistry.gw.lo:5000 (HTTP, no auth)
 
 # Paths (relative to config.sh location)
 CONFIG_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# Registry settings
-export LOCAL_REGISTRY='registry.gw.lo'
+# Registry settings (FastRegistry - HTTP, no auth)
+export LOCAL_REGISTRY='fastregistry.gw.lo:5000'
 export LOCAL_REPOSITORY='openshift/release'
 export RELEASE_NAME="ocp-release"
 export ARCHITECTURE='x86_64'
+export FASTREGISTRY_URL='http://fastregistry.gw.lo:5000'
 
-# Registry credentials (loaded from .env file)
-if [[ -f "${CONFIG_DIR}/.env" ]]; then
-    source "${CONFIG_DIR}/.env"
-    export REGISTRY_USER
-    export REGISTRY_PASSWORD
-else
-    echo "Warning: .env file not found. Run ./generate-secrets.sh to create it." >&2
-fi
 export PULL_SECRET_JSON="${CONFIG_DIR}/pullsecret.json"
 export KUBECONFIG_DIR="${HOME}/.kube"
 

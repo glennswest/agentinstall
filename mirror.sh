@@ -1,10 +1,7 @@
 #!/bin/bash
-# Mirror OpenShift release by calling mirror-local.sh on registry server
-# Operator catalog is NOT mirrored by default (use --with-operators to include)
-# Usage: ./mirror.sh <version> [--wipe] [--with-operators]
+# Mirror OpenShift release via FastRegistry admin API
+# Usage: ./mirror.sh <version>
 # Example: ./mirror.sh 4.18.10
-# Example: ./mirror.sh 4.18.10 --wipe            # Wipe existing mirror first
-# Example: ./mirror.sh 4.18.10 --with-operators  # Include operator catalog
 # Example: ./mirror.sh 4.18.z                    # Mirror latest 4.18.x release
 # Example: ./mirror.sh 4.18                      # Mirror latest 4.18.x release
 
@@ -13,21 +10,22 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "${SCRIPT_DIR}/config.sh"
 
-REGISTRY_HOST="${LOCAL_REGISTRY%%:*}"
-SSH_OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR"
-
-WIPE=""
-WITH_OPERATORS=""
 VERSION=""
 
 # Parse arguments
 for arg in "$@"; do
     case $arg in
-        --wipe)
-            WIPE="--wipe"
-            ;;
-        --with-operators)
-            WITH_OPERATORS="--with-operators"
+        -h|--help)
+            echo "Usage: $0 <version>"
+            echo ""
+            echo "Mirrors an OpenShift release via the FastRegistry API."
+            echo "Automatically discovers, clones, and extracts artifacts."
+            echo ""
+            echo "Examples:"
+            echo "  $0 4.18.10    Mirror a specific version"
+            echo "  $0 4.18.z     Mirror latest 4.18.x release"
+            echo "  $0 4.18       Mirror latest 4.18.x release"
+            exit 0
             ;;
         *)
             VERSION="$arg"
@@ -36,33 +34,74 @@ for arg in "$@"; do
 done
 
 if [ -z "$VERSION" ]; then
-    echo "Usage: $0 <version> [--wipe] [--with-operators]"
+    echo "Usage: $0 <version>"
     echo "Example: $0 4.18.10"
-    echo "Example: $0 4.18.10 --wipe            # Wipe existing mirror first"
-    echo "Example: $0 4.18.10 --with-operators  # Include operator catalog"
-    echo "Example: $0 4.18.z                    # Mirror latest 4.18.x release"
-    echo "Example: $0 4.18                      # Mirror latest 4.18.x release"
+    echo "Example: $0 4.18.z     # Mirror latest 4.18.x release"
+    echo "Example: $0 4.18       # Mirror latest 4.18.x release"
     exit 1
 fi
 
 VERSION=$(resolve_latest_version "$VERSION")
+TAG="${VERSION}-${ARCHITECTURE}"
 
 echo "=== Mirror OpenShift ${VERSION} ==="
-echo "Registry: ${LOCAL_REGISTRY}"
-if [ -n "$WIPE" ] && [ -n "$WITH_OPERATORS" ]; then
-    echo "Mode: Wipe + Mirror (with operators)"
-elif [ -n "$WIPE" ]; then
-    echo "Mode: Wipe + Mirror"
-elif [ -n "$WITH_OPERATORS" ]; then
-    echo "Mode: Mirror (with operators)"
-else
-    echo "Mode: Mirror"
+echo "Registry: ${FASTREGISTRY_URL}"
+echo ""
+
+# Trigger clone via FastRegistry admin API
+echo "Starting clone..."
+RESULT=$(curl -s -X POST "${FASTREGISTRY_URL}/admin/releases/clone" \
+    -H 'Content-Type: application/json' \
+    -d "{\"version\":\"${TAG}\"}")
+
+# Check for error
+if echo "$RESULT" | grep -q '"error"'; then
+    echo "Error: $(echo "$RESULT" | jq -r '.error // .message // .')"
+    exit 1
 fi
+
+echo "Clone started: $(echo "$RESULT" | jq -r '.message // .')"
 echo ""
 
-# Call mirror-local.sh on the registry server
-ssh $SSH_OPTS root@${REGISTRY_HOST} "/root/mirror-local.sh ${VERSION} ${WIPE} ${WITH_OPERATORS}"
+# Poll until ready
+echo "Waiting for completion..."
+while true; do
+    STATUS=$(curl -s "${FASTREGISTRY_URL}/admin/releases/${TAG}/status")
+    STATE=$(echo "$STATUS" | jq -r '.release.state // "unknown"')
 
-echo ""
-echo "=== Mirror Complete ==="
-echo "Run ./install.sh ${VERSION} to install"
+    case "$STATE" in
+        ready)
+            printf "\r%-40s\n" ""
+            echo "Release ${TAG} is ready"
+            echo ""
+            ARTIFACTS=$(echo "$STATUS" | jq -r '.release.artifacts[]?.name // empty' 2>/dev/null)
+            if [ -n "$ARTIFACTS" ]; then
+                echo "Artifacts:"
+                echo "$ARTIFACTS" | while read -r name; do
+                    echo "  ${FASTREGISTRY_URL}/files/releases/${VERSION}/${name}"
+                done
+            fi
+            echo ""
+            echo "=== Mirror Complete ==="
+            echo "Release image: ${LOCAL_REGISTRY}/${LOCAL_REPOSITORY}:${TAG}"
+            echo "Run ./install.sh ${VERSION} to install"
+            exit 0
+            ;;
+        failed)
+            printf "\r%-40s\n" ""
+            ERROR=$(echo "$STATUS" | jq -r '.release.error // "unknown error"')
+            echo "Failed: ${ERROR}"
+            exit 1
+            ;;
+        cloning|extracting)
+            PROGRESS=$(echo "$STATUS" | jq -r '.progress.percent_done // 0' 2>/dev/null)
+            PHASE=$(echo "$STATUS" | jq -r '.progress.phase // .release.state' 2>/dev/null)
+            printf "\r  %-20s %s%%" "$PHASE" "$PROGRESS"
+            sleep 5
+            ;;
+        *)
+            printf "\r  %-20s" "$STATE"
+            sleep 5
+            ;;
+    esac
+done
