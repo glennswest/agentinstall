@@ -289,25 +289,18 @@ if not blobs and digests:
     print(f'FAILED:0 blobs from {len(digests)} images, {len(errors)} manifest errors')
     sys.exit(1)
 
-print(f'  Verifying {len(blobs)} unique blobs...', file=sys.stderr)
+print(f'  Verifying {len(blobs)} unique blobs on disk...', file=sys.stderr)
 
-# HEAD-check blobs in parallel
+# Check blob files exist on disk (HTTP HEAD lies - quay returns 200 even for missing files)
+import os
+storage_root = '/var/lib/quay/storage'
 missing = []
-
-def check_blob(digest):
-    s, _ = api(f'blobs/{digest}')
-    return digest, s
-
-with ThreadPoolExecutor(max_workers=10) as pool:
-    futs = {pool.submit(check_blob, b): b for b in blobs}
-    done = 0
-    for f in as_completed(futs):
-        d, status = f.result()
-        done += 1
-        if status != 200:
-            missing.append(d)
-        if done % 500 == 0:
-            print(f'  Checked {done}/{len(blobs)} blobs...', file=sys.stderr)
+for b in blobs:
+    # digest format: sha256:abc123... -> storage path: sha256/ab/abc123...
+    algo, hashval = b.split(':', 1)
+    blob_path = os.path.join(storage_root, algo, hashval[:2], hashval)
+    if not os.path.exists(blob_path):
+        missing.append(b)
 
 if errors:
     for e in errors:
@@ -324,17 +317,82 @@ BLOBCHECK
 ) || BLOB_EXIT=$?
 
 if [ $BLOB_EXIT -ne 0 ]; then
+    MISSING_BLOBS=$(echo "$BLOB_OUTPUT" | grep "^MISSING_BLOB:" | cut -d: -f2-)
+    MISSING_COUNT=$(echo "$MISSING_BLOBS" | wc -l | tr -d ' ')
     echo ""
-    echo "$BLOB_OUTPUT"
-    echo ""
-    echo "ERROR: Registry blob verification failed!"
-    echo "Some image layers are missing from the local registry."
-    echo "Re-run: ./mirror.sh ${OCP_VERSION} --wipe"
-    exit 1
+    echo "  Found ${MISSING_COUNT} missing blob(s) on disk - attempting auto-repair..."
+
+    # For each missing blob, download from upstream and place in quay storage
+    REPAIR_FAILED=0
+    UPSTREAM_REGISTRY="quay.io"
+    UPSTREAM_REPO="openshift-release-dev/ocp-v4.0-art-dev"
+    while IFS= read -r blob_digest; do
+        [ -z "$blob_digest" ] && continue
+        algo="${blob_digest%%:*}"
+        hashval="${blob_digest#*:}"
+        storage_dir="/var/lib/quay/storage/${algo}/${hashval:0:2}"
+        storage_path="${storage_dir}/${hashval}"
+        echo "  Repairing ${hashval:0:16}..."
+
+        # Download blob from upstream via registry API and place directly in storage
+        REPAIR_OK=$(ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR \
+            "root@${REGISTRY_HOST}" "
+            mkdir -p '${storage_dir}'
+            # Get upstream auth token
+            TOKEN=\$(curl -sL 'https://auth.quay.io/v2/auth?service=quay.io&scope=repository:${UPSTREAM_REPO}:pull' \
+                --authfile /root/pullsecret-combined.json 2>/dev/null | python3 -c \"import sys,json; print(json.load(sys.stdin).get('token',''))\" 2>/dev/null) || true
+            if [ -z \"\$TOKEN\" ]; then
+                # Try with basic auth from pull secret
+                AUTH=\$(python3 -c \"import json; ps=json.load(open('/root/pullsecret-combined.json')); print(ps['auths'].get('quay.io',{}).get('auth',''))\" 2>/dev/null)
+                TOKEN=\$(curl -sL -H \"Authorization: Basic \$AUTH\" 'https://auth.quay.io/v2/auth?service=quay.io&scope=repository:${UPSTREAM_REPO}:pull' 2>/dev/null | python3 -c \"import sys,json; print(json.load(sys.stdin).get('token',''))\" 2>/dev/null) || true
+            fi
+            if [ -n \"\$TOKEN\" ]; then
+                HTTP_CODE=\$(curl -sL -o '${storage_path}' -w '%{http_code}' \
+                    -H \"Authorization: Bearer \$TOKEN\" \
+                    'https://quay.io/v2/${UPSTREAM_REPO}/blobs/${blob_digest}')
+                if [ \"\$HTTP_CODE\" = '200' ] && [ -f '${storage_path}' ] && [ -s '${storage_path}' ]; then
+                    # Verify downloaded blob matches expected digest
+                    ACTUAL=\$(sha256sum '${storage_path}' | cut -d' ' -f1)
+                    if [ \"\$ACTUAL\" = '${hashval}' ]; then
+                        echo 'OK'
+                    else
+                        rm -f '${storage_path}'
+                        echo 'CHECKSUM_MISMATCH'
+                    fi
+                else
+                    rm -f '${storage_path}'
+                    echo 'DOWNLOAD_FAILED'
+                fi
+            else
+                echo 'AUTH_FAILED'
+            fi
+        " 2>/dev/null)
+
+        if [ "$REPAIR_OK" = "OK" ]; then
+            echo "    ✓ Repaired"
+        else
+            echo "    ✗ Repair failed: ${REPAIR_OK}"
+            REPAIR_FAILED=$((REPAIR_FAILED + 1))
+        fi
+    done <<< "$MISSING_BLOBS"
+
+    if [ $REPAIR_FAILED -gt 0 ]; then
+        echo ""
+        echo "ERROR: ${REPAIR_FAILED} blob(s) could not be repaired."
+        echo "Re-run: ./mirror.sh ${OCP_VERSION} --wipe"
+        exit 1
+    fi
+    echo "  ✓ All missing blobs repaired from upstream"
 fi
 
 BLOB_COUNT=$(echo "$BLOB_OUTPUT" | grep "^VERIFIED:" | cut -d: -f2)
-echo "  ✓ All ${BLOB_COUNT} blobs verified intact"
+if [ -n "$BLOB_COUNT" ]; then
+    echo "  ✓ All ${BLOB_COUNT} blobs verified intact"
+else
+    # Blobs were repaired, count from output
+    TOTAL_BLOBS=$(echo "$BLOB_OUTPUT" | grep -oP 'Verifying \K[0-9]+')
+    echo "  ✓ All ${TOTAL_BLOBS} blobs verified (with repairs)"
+fi
 
 echo ""
 echo "Registry pre-flight checks passed."
