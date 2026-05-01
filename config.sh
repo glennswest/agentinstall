@@ -1,22 +1,25 @@
 #!/bin/bash
 # Configuration for agent-based OpenShift installation
-# Uses FastRegistry at fastregistry.gw.lo:5000 (HTTP, no auth)
+# Uses FastRegistry at fastregistry.g8.lo:5000 (HTTP, no auth)
 
 # Paths (relative to config.sh location)
 CONFIG_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Registry settings (FastRegistry - HTTP, no auth)
-export LOCAL_REGISTRY='fastregistry.gw.lo:5000'
+export LOCAL_REGISTRY='fastregistry.g8.lo:5000'
 export LOCAL_REPOSITORY='openshift/release'
 export RELEASE_NAME="ocp-release"
 export ARCHITECTURE='x86_64'
-export FASTREGISTRY_URL='http://fastregistry.gw.lo:5000'
+export FASTREGISTRY_URL='http://fastregistry.g8.lo:5000'
+
+# PXE Manager settings
+export PXE_MANAGER_URL='http://pxe.g10.lo:8080'
 
 export PULL_SECRET_JSON="${CONFIG_DIR}/pullsecret.json"
 export KUBECONFIG_DIR="${HOME}/.kube"
 
 # Proxmox settings
-export PVE_HOST='pve.gw.lo'
+export PVE_HOST='pve.g8.lo'
 export PVE_USER='root'
 export ISO_PATH='/var/lib/vz/template/iso'
 export ISO_NAME='coreos-x86_64.iso'
@@ -27,9 +30,9 @@ export LVM_STORAGE='production-lvm'
 export DEFAULT_DISK_SIZE='150G'
 
 # Cluster settings
-export CLUSTER_NAME='gw'
-export BASE_DOMAIN='gw.lo'
-export RENDEZVOUS_IP='192.168.1.201'
+export CLUSTER_NAME='g8'
+export BASE_DOMAIN='g8.lo'
+export RENDEZVOUS_IP='192.168.8.201'
 
 # VM ID ranges (same as qpve: 700-706)
 export BOOTSTRAP_VM_ID=700

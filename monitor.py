@@ -16,9 +16,11 @@ import yaml
 
 # Configuration
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-STATE_FILE = os.path.join(SCRIPT_DIR, "gw", ".openshift_install_state.json")
+CLUSTER_NAME = os.environ.get("CLUSTER_NAME", "g8")
+STATE_FILE = os.path.join(SCRIPT_DIR, CLUSTER_NAME, ".openshift_install_state.json")
 AGENT_CONFIG_FILE = os.path.join(SCRIPT_DIR, "agent-config.yaml")
-API_URL = "http://192.168.1.201:8090/api/assisted-install/v2"
+RENDEZVOUS_IP = os.environ.get("RENDEZVOUS_IP", "192.168.8.201")
+API_URL = f"http://{RENDEZVOUS_IP}:8090/api/assisted-install/v2"
 REFRESH_INTERVAL = 5000  # ms
 EVENT_POLL_INTERVAL = 2  # seconds - faster polling for events
 
@@ -323,7 +325,7 @@ class AgentMonitor:
         try:
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             sock.settimeout(1)
-            result = sock.connect_ex(('api.gw.lo', 6443))
+            result = sock.connect_ex((f'api.{CLUSTER_NAME}.lo', 6443))
             sock.close()
             return result == 0
         except:
@@ -1013,7 +1015,7 @@ class AgentMonitor:
             if os.path.exists(AGENT_CONFIG_FILE):
                 with open(AGENT_CONFIG_FILE, 'r') as f:
                     config = yaml.safe_load(f)
-                rendezvous = config.get("rendezvousIP", "192.168.1.201")
+                rendezvous = config.get("rendezvousIP", RENDEZVOUS_IP)
                 base_net, base_host = rendezvous.rsplit('.', 1)
                 base_host = int(base_host)
                 masters = [h for h in config.get("hosts", []) if h.get("role") == "master"]

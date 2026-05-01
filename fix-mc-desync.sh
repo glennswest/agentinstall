@@ -9,7 +9,8 @@
 set -eo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-export KUBECONFIG="${SCRIPT_DIR}/gw/auth/kubeconfig"
+source "${SCRIPT_DIR}/config.sh"
+export KUBECONFIG="${SCRIPT_DIR}/${CLUSTER_NAME}/auth/kubeconfig"
 
 echo "=== MachineConfig Bootstrap Desync Fix ==="
 
@@ -102,7 +103,7 @@ fi
 echo ""
 echo "Verifying MCS (port 22623)..."
 sleep 2
-MCS_CODE=$(curl -sk --connect-timeout 3 -o /dev/null -w '%{http_code}' "https://api-int.gw.lo:22623/config/master" 2>/dev/null || echo "000")
+MCS_CODE=$(curl -sk --connect-timeout 3 -o /dev/null -w '%{http_code}' "https://api-int.${BASE_DOMAIN}:22623/config/master" 2>/dev/null || echo "000")
 if [ "$MCS_CODE" = "200" ]; then
     echo "  MCS returning 200 OK"
 else

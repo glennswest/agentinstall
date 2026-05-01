@@ -36,12 +36,15 @@ get_disktype() {
     fi
 }
 
-# Attach ISO to a VM
-attach_iso() {
+# Configure VM for PXE boot (network first, then disk, remove IDE)
+configure_pxe_boot() {
     local vmid
     vmid=$(get_vmid "$1")
-    echo "Attaching ISO to VM ${vmid}..."
-    ssh "${PVE_USER}@${PVE_HOST}" "qm set ${vmid} --ide2 local:iso/${ISO_NAME},media=cdrom"
+    echo "Configuring VM ${vmid} for PXE boot..."
+    ssh "${PVE_USER}@${PVE_HOST}" "
+        qm set ${vmid} --boot order=net0\\;scsi0
+        qm set ${vmid} --delete ide2 2>/dev/null || true
+    "
 }
 
 # Power on a VM
@@ -114,8 +117,8 @@ erase_disk() {
     echo "Disk recreated: ${lvmname}"
 }
 
-# Create a VM with ISO boot
-create_vm_iso() {
+# Create a VM with PXE boot
+create_vm_pxe() {
     local vmid="$1"
     local name="$2"
     local mac="$3"
@@ -129,7 +132,7 @@ create_vm_iso() {
     # Create LVM disk
     create_lvm "$vmid" "$disksize"
 
-    # Create VM
+    # Create VM with network boot
     ssh "${PVE_USER}@${PVE_HOST}" "qm create ${vmid} \
         --machine q35 \
         --name ${name} \
@@ -140,8 +143,7 @@ create_vm_iso() {
         --sockets 1 \
         --memory ${memory} \
         --net0 bridge=${NETWORK_BRIDGE},virtio=${mac} \
-        --ide2 local:iso/${ISO_NAME},media=cdrom \
-        --boot order=scsi0\\;ide2 \
+        --boot order=net0\\;scsi0 \
         --scsihw virtio-scsi-single \
         --scsi0 ${LVM_STORAGE}:${lvmname},size=${disksize}"
 }
@@ -155,10 +157,44 @@ delete_vm() {
     ssh "${PVE_USER}@${PVE_HOST}" "qm destroy ${vmid}" 2>/dev/null || true
 }
 
-# Upload ISO to Proxmox with compression
-upload_iso() {
-    local iso_path="$1"
-    echo "Uploading ISO to Proxmox (with compression)..."
-    scp -O -C "$iso_path" "${PVE_USER}@${PVE_HOST}:${ISO_PATH}/${ISO_NAME}"
-    echo "ISO uploaded: ${ISO_PATH}/${ISO_NAME}"
+# --- PXE Manager API Functions ---
+
+# Add or update a host in PXE Manager
+pxe_add_host() {
+    local mac="$1"
+    local hostname="$2"
+    local image="${3:-}"
+
+    echo "Adding host ${hostname} (${mac}) to PXE Manager..."
+    curl -s -X POST "${PXE_MANAGER_URL}/api/hosts" \
+        -H "Content-Type: application/json" \
+        -d "{\"mac\": \"${mac}\", \"hostname\": \"${hostname}\", \"current_image\": \"${image}\"}" \
+        >/dev/null
+}
+
+# Set boot image for a host
+pxe_set_image() {
+    local mac="$1"
+    local image="$2"
+
+    echo "Setting boot image for ${mac} to ${image}..."
+    curl -s -X POST "${PXE_MANAGER_URL}/api/host?mac=${mac}&action=set_image" \
+        -d "image=${image}" \
+        >/dev/null
+}
+
+# Add an ISO image to PXE Manager
+pxe_add_iso() {
+    local name="$1"
+    local url="$2"
+
+    echo "Adding ISO ${name} to PXE Manager..."
+    curl -s -X POST "${PXE_MANAGER_URL}/api/image/iso" \
+        -d "name=${name}" \
+        -d "url=${url}"
+}
+
+# List hosts in PXE Manager
+pxe_list_hosts() {
+    curl -s "${PXE_MANAGER_URL}/api/hosts"
 }

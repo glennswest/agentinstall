@@ -7,6 +7,7 @@ pull-secret*.txt
 
 # Generated installation artifacts
 gw/
+g8/
 *.iso
 
 # Kubeconfig

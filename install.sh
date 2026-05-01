@@ -1,5 +1,5 @@
 #!/bin/bash
-# Agent-based OpenShift installation using FastRegistry
+# Agent-based OpenShift installation using FastRegistry + PXE boot
 # Usage: ./install.sh <version>
 # Example: ./install.sh 4.14.10
 
@@ -26,6 +26,7 @@ echo "=========================================="
 echo "Agent-Based OpenShift Installation"
 echo "Version: ${OCP_VERSION}"
 echo "Registry: ${LOCAL_REGISTRY}"
+echo "PXE Manager: ${PXE_MANAGER_URL}"
 echo "=========================================="
 
 # Record install start
@@ -63,22 +64,6 @@ if ! oc image info "${RELEASE_IMAGE}" --insecure >/dev/null 2>&1; then
     exit 1
 fi
 echo "  ✓ Release image exists"
-
-# Get machine-os-images digest and verify it exists
-MOS_DIGEST=$(oc adm release info "${RELEASE_IMAGE}" --insecure 2>/dev/null | grep machine-os-images | awk '{print $2}')
-if [ -n "$MOS_DIGEST" ]; then
-    MOS_IMAGE="${LOCAL_REGISTRY}/${LOCAL_REPOSITORY}@${MOS_DIGEST}"
-    if ! oc image info "${MOS_IMAGE}" --insecure >/dev/null 2>&1; then
-        echo "ERROR: machine-os-images not found: ${MOS_IMAGE}"
-        echo "This component is required for ISO generation."
-        echo "Re-run mirror: ./mirror.sh ${OCP_VERSION}"
-        exit 1
-    fi
-    echo "  ✓ machine-os-images exists"
-else
-    echo "  ! Could not verify machine-os-images (may be older release)"
-fi
-
 echo ""
 echo "Registry pre-flight checks passed."
 
@@ -90,8 +75,8 @@ echo "[Step 1] Pulling openshift-install from registry..."
 # Step 2: Prepare installation directory
 echo ""
 echo "[Step 2] Preparing installation directory..."
-rm -rf "${SCRIPT_DIR}/gw"
-mkdir -p "${SCRIPT_DIR}/gw"
+rm -rf "${SCRIPT_DIR}/${CLUSTER_NAME}"
+mkdir -p "${SCRIPT_DIR}/${CLUSTER_NAME}"
 
 # Copy and prepare install-config
 if [ ! -f "${SCRIPT_DIR}/install-config.yaml" ]; then
@@ -100,28 +85,59 @@ if [ ! -f "${SCRIPT_DIR}/install-config.yaml" ]; then
     exit 1
 fi
 
-cp "${SCRIPT_DIR}/install-config.yaml" "${SCRIPT_DIR}/gw/install-config.yaml"
-cp "${SCRIPT_DIR}/agent-config.yaml" "${SCRIPT_DIR}/gw/"
+cp "${SCRIPT_DIR}/install-config.yaml" "${SCRIPT_DIR}/${CLUSTER_NAME}/install-config.yaml"
+cp "${SCRIPT_DIR}/agent-config.yaml" "${SCRIPT_DIR}/${CLUSTER_NAME}/"
 
-# Step 3: Create agent ISO locally and upload to Proxmox
+# Step 3: Generate configs locally and create ISO via FastRegistry
 echo ""
-echo "[Step 3] Creating agent ISO..."
+echo "[Step 3] Generating configs and creating ISO..."
 
-# Delete old ISO from Proxmox (VMs already stopped in Step 0)
-echo "Deleting old ISO from Proxmox..."
-ssh root@${PVE_HOST} "rm -f ${ISO_PATH}/${ISO_NAME}"
+# Generate config-image locally (fast - just creates configs, no ISO download)
+# This gives us kubeconfig and state file needed for wait-for commands
+echo "Generating local configs (kubeconfig, state file)..."
+cd "${SCRIPT_DIR}/${CLUSTER_NAME}"
+openshift-install agent create config-image
+cd "${SCRIPT_DIR}"
+echo "  ✓ Local configs generated"
 
-# Wipe all disks (must complete before ISO generation to ensure clean state)
+# POST config files to FastRegistry - it generates the full agent ISO
+# This is faster than generating locally since FastRegistry has the base ISO cached
+echo "Creating agent ISO via FastRegistry..."
+ISO_RESPONSE=$(curl -s -X POST "${FASTREGISTRY_URL}/admin/releases/${OCP_VERSION}-${ARCHITECTURE}/iso" \
+    -H "Content-Type: application/json" \
+    -d "{
+        \"install_config\": $(cat "${SCRIPT_DIR}/install-config.yaml" | jq -Rs),
+        \"agent_config\": $(cat "${SCRIPT_DIR}/agent-config.yaml" | jq -Rs)
+    }")
+
+# Check for error
+if echo "$ISO_RESPONSE" | grep -q '"error"'; then
+    echo "ERROR: FastRegistry ISO creation failed:"
+    echo "$ISO_RESPONSE" | jq -r '.error'
+    exit 1
+fi
+
+ISO_URL=$(echo "$ISO_RESPONSE" | jq -r '.full_url // .url')
+ISO_ID=$(echo "$ISO_RESPONSE" | jq -r '.id')
+echo "  ✓ ISO created: ${ISO_URL}"
+
+# Save ISO URL for reference
+echo "$ISO_URL" > "${SCRIPT_DIR}/${CLUSTER_NAME}/.iso_url"
+
+# Step 4: Configure VMs for PXE boot and wipe disks
+echo ""
+echo "[Step 4] Configuring VMs for PXE boot..."
+
+# Wipe all disks
 echo "Wiping disks..."
 for vmid in "${CONTROL_VM_IDS[@]}" "${WORKER_VM_IDS[@]}"; do
     erase_disk "$vmid"
 done
 
-# Verify all disks are wiped (check first 512 bytes are zero - no MBR/GPT)
+# Verify all disks are wiped
 echo "Verifying disks are wiped..."
 for vmid in "${CONTROL_VM_IDS[@]}" "${WORKER_VM_IDS[@]}"; do
     lvmname="vm-${vmid}-disk-0"
-    # Check if disk has any non-zero bytes in first 512 bytes
     nonzero=$(ssh root@${PVE_HOST} "dd if=/dev/${LVM_VG}/${lvmname} bs=512 count=1 2>/dev/null | xxd -p | tr -d '\n' | sed 's/0//g'" 2>/dev/null || true)
     if [ -n "$nonzero" ]; then
         echo "ERROR: Disk ${lvmname} still has data! Wipe failed."
@@ -131,81 +147,65 @@ for vmid in "${CONTROL_VM_IDS[@]}" "${WORKER_VM_IDS[@]}"; do
 done
 echo "All disks verified clean."
 
-# Generate ISO locally
-echo "Generating agent ISO locally..."
-cd "${SCRIPT_DIR}/gw"
-openshift-install agent create image
-cd "${SCRIPT_DIR}"
+# Configure VMs for PXE boot
+echo "Configuring boot order..."
+for vmid in "${CONTROL_VM_IDS[@]}" "${WORKER_VM_IDS[@]}"; do
+    configure_pxe_boot "$vmid"
+done
 
-# Calculate checksum before upload
-LOCAL_CHECKSUM=$(shasum -a 256 "${SCRIPT_DIR}/gw/agent.x86_64.iso" | cut -d' ' -f1)
-echo "Local ISO checksum: ${LOCAL_CHECKSUM}"
-
-# Upload to Proxmox
-echo "Uploading agent ISO to Proxmox..."
-upload_iso "${SCRIPT_DIR}/gw/agent.x86_64.iso"
-
-# Save checksum for later verification
-echo "$LOCAL_CHECKSUM" > "${SCRIPT_DIR}/gw/.iso_checksum"
-
-# Remove config files from gw directory - they're consumed during ISO generation
-# and their presence causes conflicts with the state file during wait-for commands
-rm -f "${SCRIPT_DIR}/gw/install-config.yaml" "${SCRIPT_DIR}/gw/agent-config.yaml"
-
-
-# Step 4: Setup kubeconfig
+# Step 5: Register ISO and hosts with PXE Manager
 echo ""
-echo "[Step 4] Setting up kubeconfig..."
+echo "[Step 5] Configuring PXE Manager..."
+
+# Create unique image name for this install
+ISO_IMAGE_NAME="ocp-${OCP_VERSION}-$(date +%Y%m%d%H%M%S)"
+
+# Add ISO to PXE Manager
+echo "Registering ISO with PXE Manager..."
+pxe_add_iso "$ISO_IMAGE_NAME" "$ISO_URL"
+echo "  ✓ ISO registered as: ${ISO_IMAGE_NAME}"
+
+# Parse agent-config.yaml to get host MACs and hostnames
+echo "Registering hosts with PXE Manager..."
+python3 -c "
+import yaml
+import subprocess
+import os
+
+pxe_url = os.environ.get('PXE_MANAGER_URL', 'http://pxe.g10.lo:8080')
+image_name = '${ISO_IMAGE_NAME}'
+
+with open('${SCRIPT_DIR}/agent-config.yaml') as f:
+    config = yaml.safe_load(f)
+
+for host in config.get('hosts', []):
+    hostname = host.get('hostname', '')
+    for iface in host.get('interfaces', []):
+        mac = iface.get('macAddress', '')
+        if mac:
+            # Add host to PXE Manager
+            subprocess.run([
+                'curl', '-s', '-X', 'POST', f'{pxe_url}/api/hosts',
+                '-H', 'Content-Type: application/json',
+                '-d', '{\"mac\": \"' + mac + '\", \"hostname\": \"' + hostname + '\", \"current_image\": \"' + image_name + '\"}'
+            ], capture_output=True)
+            print(f'  ✓ {hostname} ({mac})')
+            break
+"
+
+# Step 6: Setup kubeconfig
+echo ""
+echo "[Step 6] Setting up kubeconfig..."
 mkdir -p "${KUBECONFIG_DIR}"
 rm -f "${KUBECONFIG_DIR}/config"
-cp "${SCRIPT_DIR}/gw/auth/kubeconfig" "${KUBECONFIG_DIR}/config"
+cp "${SCRIPT_DIR}/${CLUSTER_NAME}/auth/kubeconfig" "${KUBECONFIG_DIR}/config"
 
-# Step 5: Verify ISO checksum and power on all nodes
+# Remove config files from cluster work directory
+rm -f "${SCRIPT_DIR}/${CLUSTER_NAME}/install-config.yaml" "${SCRIPT_DIR}/${CLUSTER_NAME}/agent-config.yaml"
+
+# Step 7: Power on all nodes
 echo ""
-echo "[Step 5] Verifying ISO checksum before starting nodes..."
-EXPECTED_CHECKSUM=$(cat "${SCRIPT_DIR}/gw/.iso_checksum" 2>/dev/null || echo "")
-if [ -z "$EXPECTED_CHECKSUM" ]; then
-    echo "WARNING: No saved checksum found, using size check only"
-    ISO_SIZE=$(ssh root@${PVE_HOST} "stat -c%s ${ISO_PATH}/${ISO_NAME} 2>/dev/null || echo 0")
-    if [ "$ISO_SIZE" -lt 1000000000 ]; then
-        echo "ERROR: ISO missing or too small on Proxmox (${ISO_SIZE} bytes)"
-        exit 1
-    fi
-    echo "ISO size verified: ${ISO_SIZE} bytes"
-else
-    ACTUAL_CHECKSUM=$(ssh root@${PVE_HOST} "sha256sum ${ISO_PATH}/${ISO_NAME} 2>/dev/null | cut -d' ' -f1 || echo ''")
-    if [ -z "$ACTUAL_CHECKSUM" ]; then
-        echo "ERROR: ISO missing on Proxmox!"
-        exit 1
-    fi
-    if [ "$EXPECTED_CHECKSUM" != "$ACTUAL_CHECKSUM" ]; then
-        echo "ERROR: ISO checksum mismatch!"
-        echo "  Expected: ${EXPECTED_CHECKSUM}"
-        echo "  Actual:   ${ACTUAL_CHECKSUM}"
-        echo "The ISO on Proxmox does not match the generated ISO."
-        exit 1
-    fi
-    echo "ISO checksum verified: ${ACTUAL_CHECKSUM:0:16}..."
-fi
-
-echo ""
-echo "[Step 5] Attaching ISO and starting all nodes..."
-for vmid in "${CONTROL_VM_IDS[@]}" "${WORKER_VM_IDS[@]}"; do
-    attach_iso "$vmid"
-done
-
-# Verify ISO is attached to all VMs
-echo "Verifying ISO attachment..."
-for vmid in "${CONTROL_VM_IDS[@]}" "${WORKER_VM_IDS[@]}"; do
-    ide2=$(ssh root@${PVE_HOST} "qm config ${vmid} | grep ide2")
-    if ! echo "$ide2" | grep -q "${ISO_NAME}"; then
-        echo "ERROR: ISO not attached to VM ${vmid}!"
-        echo "  Got: $ide2"
-        exit 1
-    fi
-    echo "  VM ${vmid}: ISO attached"
-done
-
+echo "[Step 7] Starting all nodes (PXE boot)..."
 for vmid in "${CONTROL_VM_IDS[@]}" "${WORKER_VM_IDS[@]}"; do
     poweron_vm "$vmid"
 done
@@ -216,9 +216,9 @@ echo "Starting installation monitor..."
 "${SCRIPT_DIR}/venv/bin/python3" "${SCRIPT_DIR}/monitor.py" &
 disown 2>/dev/null || true
 
-# Step 6: Wait for bootstrap completion
+# Step 8: Wait for bootstrap completion
 echo ""
-echo "[Step 6] Waiting for bootstrap to complete..."
+echo "[Step 8] Waiting for bootstrap to complete..."
 
 # Check for kube-apiserver crash loop (bad ISO detection)
 echo "Checking for bootkube health..."
@@ -244,22 +244,18 @@ done
 
 # Use stdbuf to force line buffering on output
 if command -v stdbuf &>/dev/null; then
-    stdbuf -oL openshift-install --dir="${SCRIPT_DIR}/gw" agent wait-for bootstrap-complete
+    stdbuf -oL openshift-install --dir="${SCRIPT_DIR}/${CLUSTER_NAME}" agent wait-for bootstrap-complete
 else
-    openshift-install --dir="${SCRIPT_DIR}/gw" agent wait-for bootstrap-complete
+    openshift-install --dir="${SCRIPT_DIR}/${CLUSTER_NAME}" agent wait-for bootstrap-complete
 fi
 
-# Step 6.5: Fix MachineConfig bootstrap desync
-# After bootstrap pivot, the MCP status.configuration.name is empty and master
-# node annotations reference a deleted rendered MC. This blocks control0 from
-# getting its ignition config (MCS returns 500) and causes MCD to loop on
-# the other masters. See MC_BOOTSTRAP_DESYNC.md for details.
+# Step 8.5: Fix MachineConfig bootstrap desync
 echo ""
-echo "[Step 6.5] Applying MachineConfig bootstrap desync fix..."
+echo "[Step 8.5] Applying MachineConfig bootstrap desync fix..."
 MC_FIX_RETRIES=0
 MC_FIX_MAX=12  # 2 minutes max (12 x 10s)
 while [ $MC_FIX_RETRIES -lt $MC_FIX_MAX ]; do
-    if KUBECONFIG="${SCRIPT_DIR}/gw/auth/kubeconfig" oc get mcp master >/dev/null 2>&1; then
+    if KUBECONFIG="${SCRIPT_DIR}/${CLUSTER_NAME}/auth/kubeconfig" oc get mcp master >/dev/null 2>&1; then
         "${SCRIPT_DIR}/fix-mc-desync.sh"
         break
     fi
@@ -272,13 +268,13 @@ if [ $MC_FIX_RETRIES -ge $MC_FIX_MAX ]; then
     echo "Run manually: ./fix-mc-desync.sh"
 fi
 
-# Step 7: Wait for install completion
+# Step 9: Wait for install completion
 echo ""
-echo "[Step 7] Waiting for installation to complete..."
+echo "[Step 9] Waiting for installation to complete..."
 if command -v stdbuf &>/dev/null; then
-    stdbuf -oL openshift-install --dir="${SCRIPT_DIR}/gw" agent wait-for install-complete
+    stdbuf -oL openshift-install --dir="${SCRIPT_DIR}/${CLUSTER_NAME}" agent wait-for install-complete
 else
-    openshift-install --dir="${SCRIPT_DIR}/gw" agent wait-for install-complete
+    openshift-install --dir="${SCRIPT_DIR}/${CLUSTER_NAME}" agent wait-for install-complete
 fi
 
 # Record successful install

@@ -11,13 +11,13 @@ controlPlane:
   name: master
   replicas: 3
 metadata:
-  name: gw
+  name: g8
 networking:
   clusterNetwork:
   - cidr: 10.128.0.0/14
     hostPrefix: 23
   machineNetwork:
-  - cidr: 192.168.1.0/24
+  - cidr: 192.168.8.0/24
   networkType: OVNKubernetes
   serviceNetwork:
   - 172.30.0.0/16
@@ -27,8 +27,14 @@ pullSecret: 'PULL_SECRET_PLACEHOLDER'
 sshKey: 'SSH_KEY_PLACEHOLDER'
 imageDigestSources:
 - mirrors:
-  - registry.gw.lo/openshift/release
-  source: registry.gw.lo/openshift/release
+  - fastregistry.g8.lo:5000/openshift/release
+  source: quay.io/openshift-release-dev/ocp-release
+- mirrors:
+  - fastregistry.g8.lo:5000/openshift/release
+  source: quay.io/openshift-release-dev/ocp-v4.0-art-dev
+- mirrors:
+  - fastregistry.g8.lo:5000/openshift/release
+  source: fastregistry.g8.lo:5000/openshift/release
 additionalTrustBundle: |
   -----BEGIN CERTIFICATE-----
   # Add your registry CA certificate here if using self-signed certs

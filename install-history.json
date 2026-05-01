@@ -606,5 +606,13 @@
     "end_time": "2026-02-05T21:12:16Z",
     "end_date": "2026-02-05",
     "completed": false
+  },
+  {
+    "version": "4.21.0",
+    "start_time": "2026-02-05T22:07:33Z",
+    "start_date": "2026-02-05",
+    "end_time": "2026-02-05T22:17:18Z",
+    "end_date": "2026-02-05",
+    "completed": false
   }
 ]

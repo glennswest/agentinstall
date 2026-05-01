@@ -8,16 +8,16 @@ SCRIPT_DIR="${0:A:h}"
 source "${SCRIPT_DIR}/config.sh"
 
 SSH_OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ConnectTimeout=5"
-KUBECONFIG="${SCRIPT_DIR}/gw/auth/kubeconfig"
+KUBECONFIG="${SCRIPT_DIR}/${CLUSTER_NAME}/auth/kubeconfig"
 
 # Node IPs (matches agent-config.yaml)
 typeset -A NODE_IPS=(
-    control0 192.168.1.201
-    control1 192.168.1.202
-    control2 192.168.1.203
-    worker0 192.168.1.204
-    worker1 192.168.1.205
-    worker2 192.168.1.206
+    control0 192.168.8.201
+    control1 192.168.8.202
+    control2 192.168.8.203
+    worker0 192.168.8.204
+    worker1 192.168.8.205
+    worker2 192.168.8.206
 )
 
 # Output directory
@@ -89,11 +89,11 @@ done
 # API endpoint
 {
     echo "=== API Endpoints ==="
-    echo -n "api.gw.lo:6443/readyz: "
-    curl -sk --connect-timeout 5 https://api.gw.lo:6443/readyz 2>&1 || echo "unreachable"
+    echo -n "api.${BASE_DOMAIN}:6443/readyz: "
+    curl -sk --connect-timeout 5 "https://api.${BASE_DOMAIN}:6443/readyz" 2>&1 || echo "unreachable"
     echo ""
-    echo -n "api-int.gw.lo:6443/readyz: "
-    curl -sk --connect-timeout 5 https://api-int.gw.lo:6443/readyz 2>&1 || echo "unreachable"
+    echo -n "api-int.${BASE_DOMAIN}:6443/readyz: "
+    curl -sk --connect-timeout 5 "https://api-int.${BASE_DOMAIN}:6443/readyz" 2>&1 || echo "unreachable"
     echo ""
 } >> "${OUTDIR}/network/reachability.txt" 2>&1
 
