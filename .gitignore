@@ -1,7 +1,7 @@
 # Sensitive configuration files
 .env
 install-config.yaml
-pullsecret.json
+pullsecret.json*
 pull-secret*.txt
 .accesstoken
 
