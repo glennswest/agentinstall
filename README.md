@@ -1,275 +1,156 @@
 # Agent-Based OpenShift Installation
 
-Agent-based OpenShift installer optimized for local registry at `registry.gw.lo`.
+Agent-based install of a 6-node OpenShift cluster (`g8` / `g8.lo`) as Proxmox
+VMs, driven entirely from this directory. Releases are mirrored into
+**FastRegistry** (`fastregistry.g8.lo:5000`), the agent ISO is generated
+**server-side** by FastRegistry, and nodes **PXE-boot** that ISO via the PXE
+Manager — no ISO is ever attached to a VM or downloaded to the Mac.
+
+See [`ECOSYSTEM.md`](./ECOSYSTEM.md) for how this project relates to
+agent-monitor, fastregistry, pxemanager, and the bare-metal SNO flow.
 
 ## Architecture
 
 ```
-┌─────────────────┐     ┌──────────────────────────────────────────┐
-│   Mac (client)  │     │            Proxmox Host (pve.gw.lo)      │
-│                 │     │  ┌────────────────────────────────────┐  │
-│  agentinstall/  │────▶│  │  Registry VM (registry.gw.lo)     │  │
-│  - configs      │     │  │  - Quay registry (:443)           │  │
-│  - scripts      │     │  │  - Cached openshift-install       │  │
-│                 │     │  │  - ISO generation (fast)          │  │
-└─────────────────┘     │  └──────────────┬─────────────────────┘  │
-                        │                 │ local copy              │
-                        │  ┌──────────────▼─────────────────────┐  │
-                        │  │  ISO Storage                       │  │
-                        │  │  /var/lib/vz/template/iso/         │  │
-                        │  └──────────────┬─────────────────────┘  │
-                        │                 │                        │
-                        │  ┌──────────────▼─────────────────────┐  │
-                        │  │  OpenShift VMs (701-706)           │  │
-                        │  │  - control0-2.gw.lo                │  │
-                        │  │  - worker0-2.gw.lo                 │  │
-                        │  └────────────────────────────────────┘  │
-                        └──────────────────────────────────────────┘
+┌─────────────────┐   mirror / ISO API   ┌──────────────────────────────────┐
+│   Mac (client)  │─────────────────────▶│  fastregistry.g8.lo:5000         │
+│                 │                      │  - mirrored OCP release images   │
+│  agentinstall/  │                      │  - extracted oc/openshift-install│
+│  - config.sh    │                      │  - agent ISO generation          │
+│  - configs      │                      └───────────────┬──────────────────┘
+│  - scripts      │   register ISO+hosts                 │ ISO URL
+│                 │─────────────────────▶┌───────────────▼──────────────────┐
+│                 │                      │  pxe.g10.lo:8080 (PXE Manager)   │
+│                 │                      │  - serves agent ISO by MAC       │
+│                 │   qm start/stop/set  └───────────────┬──────────────────┘
+│                 │─────────────────────▶┌───────────────▼──────────────────┐
+└─────────────────┘        ssh           │  pve.g8.lo (Proxmox)             │
+                                         │  VMs 701-706 (PXE boot, LVM)     │
+                                         │  control0-2.g8.lo (8c/17G)       │
+                                         │  worker0-2.g8.lo   (4c/16G)      │
+                                         │  rendezvous: 192.168.8.201       │
+                                         └──────────────────────────────────┘
 ```
 
 ## Prerequisites
 
-- Proxmox VE access (pve.gw.lo)
-- Local registry (registry.gw.lo) with mirrored OCP images
-- [quick-quay](https://github.com/glennswest/quick-quay) project at `../quick-quay` for mirroring releases
-- `oc` CLI tool installed locally
-- SSH access to Proxmox host and registry VM
-- DNS entries for cluster (api.gw.lo, *.apps.gw.lo, etc.)
+- FastRegistry running at `fastregistry.g8.lo:5000` (HTTP, no auth)
+- PXE Manager running at `pxe.g10.lo:8080`, serving boot for the g8 VMs
+- SSH root access to `pve.g8.lo`
+- DNS for the cluster (`api.g8.lo`, `*.apps.g8.lo`, node records)
+- `oc`, `jq`, `python3` (with `pyyaml`) on the Mac
+- `pullsecret.json` in this directory (gitignored)
+- `install-config.yaml` created from `install-config.yaml.template` (gitignored)
 
 ## Quick Start
 
 ```bash
-# 1. Generate secrets (first time only)
-./generate-secrets.sh
-
-# 2. Mirror release (resolves partial versions automatically)
-./mirror.sh 4.18      # Resolves to latest 4.18.x
-
-# 3. Install cluster
-./install.sh 4.18     # Uses same version resolution
+./generate-secrets.sh     # first time only — writes .env
+./create-vms.sh           # first time only — creates VMs 701-706
+./mirror.sh 4.18          # mirror release into FastRegistry (resolves latest 4.18.x)
+./install.sh 4.18         # full install, ~same version resolution
 ```
 
-## Setup
+Version arguments accept `4.18.10` (exact), `4.18` or `4.18.z` (resolved to
+the latest 4.18.x by querying Quay.io release tags).
 
-### 1. Mirror OpenShift Release
+## What `install.sh` Does
 
-Use the `quick-quay` project to mirror a release:
+1. **Stop all VMs** (701–706) and verify they are stopped.
+2. **Pre-flight** — verify the release image exists in FastRegistry
+   (`oc image info`); tells you to run `./mirror.sh` if not.
+3. **Pull `openshift-install`** via `pull-from-registry.sh`: already-installed
+   version → `bin/` cache → FastRegistry file download → `oc adm release
+   extract` fallback. Installs to `~/.local/bin`.
+4. **Prepare workdir** — fresh `g8/` directory with `install-config.yaml` +
+   `agent-config.yaml`; run `openshift-install agent create config-image`
+   locally (fast — produces kubeconfig and the state file for the wait-for
+   commands, no ISO download).
+5. **Generate the agent ISO on FastRegistry** — POST both YAML configs to
+   `/admin/releases/<ver>-x86_64/iso`; FastRegistry embeds the ignition into
+   its cached base ISO and returns a URL (saved to `g8/.iso_url`).
+6. **Wipe and verify disks** — zero each VM's LVM disk
+   (`production-lvm/vm-<id>-disk-0`) and verify sector 0 is clean; set boot
+   order to `net0;scsi0` and remove any attached IDE ISO.
+7. **Register with PXE Manager** — add the ISO under a unique name
+   (`ocp-<ver>-<timestamp>`) and register each host MAC/hostname from
+   `agent-config.yaml` to boot it.
+8. **Install kubeconfig** to `~/.kube/config`.
+9. **Power on all nodes** — they PXE-boot the agent ISO; the rendezvous node
+   (`192.168.8.201` = control0) coordinates the install. The Tk GUI monitor
+   (`monitor.py`) launches in the background.
+10. **Wait for bootstrap** — first watches bootkube on the rendezvous node for
+    the `missing operand kubernetes version` crash-loop (a mismatched
+    openshift-install/ISO — abort early instead of hanging), then runs
+    `openshift-install agent wait-for bootstrap-complete`.
+11. **Apply the MachineConfig desync fix** (`fix-mc-desync.sh`) as soon as the
+    API answers — see [`MC_BOOTSTRAP_DESYNC.md`](./MC_BOOTSTRAP_DESYNC.md).
+12. **Wait for install-complete**, record the run in `install-history.json`,
+    and print the install history (every run is timed, start → end).
 
-```bash
-cd ~/projects/quick-quay
-./mirror.sh 4.18.30
-```
+## Configuration (`config.sh`)
 
-This mirrors to `registry.gw.lo` and caches:
-- `openshift-install` binary at `/var/lib/openshift-cache/openshift-install-<version>`
-- Base RHCOS ISO at `pve.gw.lo:/var/lib/vz/template/iso/rhcos-<version>-x86_64.iso`
+All settings live in `config.sh`, including helper functions
+(`resolve_latest_version`, install-history recording).
 
-### 2. Create VMs (first time only)
+| Variable | Value | Purpose |
+|---|---|---|
+| `LOCAL_REGISTRY` | `fastregistry.g8.lo:5000` | Registry host (HTTP, no auth) |
+| `LOCAL_REPOSITORY` | `openshift/release` | Release image repo |
+| `FASTREGISTRY_URL` | `http://fastregistry.g8.lo:5000` | Admin/file API |
+| `PXE_MANAGER_URL` | `http://pxe.g10.lo:8080` | PXE Manager API |
+| `PVE_HOST` | `pve.g8.lo` | Proxmox host (ssh as root) |
+| `CLUSTER_NAME` / `BASE_DOMAIN` | `g8` / `g8.lo` | Cluster identity; workdir name |
+| `RENDEZVOUS_IP` | `192.168.8.201` | control0; assisted-installer API host |
+| `CONTROL_VM_IDS` / `WORKER_VM_IDS` | 701–703 / 704–706 | Proxmox VM IDs |
+| `CONTROL_CORES/MEMORY` | 8 / 17000 | Control-plane VM size |
+| `WORKER_CORES/MEMORY` | 4 / 16000 | Worker VM size |
+| `LVM_VG` / `LVM_STORAGE` | `production-lvm` | Thick-provisioned VM disks |
 
-```bash
-./create-vms.sh
-```
+Node identity (hostnames, MACs, roles, rendezvous) is in `agent-config.yaml`;
+cluster settings (networks, image sources, trust bundle) come from your
+`install-config.yaml` (start from the template).
 
-Creates VMs 701-706 with:
-- Same names as qpve (control0.gw.lo, worker0.gw.lo, etc.)
-- production-lvm storage (100G thick provisioned)
-- ISO boot enabled
+## Scripts
 
-### 3. Configure install-config.yaml
+| Script | Purpose |
+|---|---|
+| `mirror.sh <ver>` | Clone a release into FastRegistry via its admin API and poll progress; artifacts (oc, openshift-install, ISOs) are extracted server-side |
+| `remirror.sh <ver>` | Wipe the existing mirror and re-mirror fresh |
+| `install.sh <ver>` | Full install (steps above) |
+| `pull-from-registry.sh <ver>` | Fetch `openshift-install` for the local OS from FastRegistry, with caching |
+| `create-vms.sh` / `delete-vms.sh` | Create/remove VMs 701–706 (fixed MACs matching `agent-config.yaml`) |
+| `poweron-all.sh` / `poweroff-all.sh` | Bulk VM power control |
+| `verify.sh <ver>` | Run `verify-local.sh` on the registry host against the mirror |
+| `watch-install.sh` | `watch oc get clusteroperators` |
+| `approvecsr.sh` | Loop auto-approving pending CSRs (run in a second terminal) |
+| `fix-mc-desync.sh` | Repair MCP status/annotation desync after bootstrap pivot |
+| `gatherdebug.sh [dir]` | Collect logs/state from all six nodes + cluster into a debug bundle |
+| `wipe_registry.sh` | Nuke registry storage (legacy — targets the old Quay layout on `registry.g8.lo`) |
+| `generate-secrets.sh` | Create `.env` with a generated registry password |
+| `lib/vm.sh` | Shared Proxmox helpers (power, disk wipe, PXE boot order, disk type) |
 
-Edit `install-config.yaml` if needed. Key settings:
-- `baseDomain: lo` (cluster name "gw" → gw.lo)
-- `imageDigestSources` pointing to registry.gw.lo
-- `additionalTrustBundle` with registry CA cert
+## Monitoring an Install
 
-## Installation
-
-```bash
-./install.sh <version>
-# Example:
-./install.sh 4.18.30
-```
-
-### Installation Steps
-
-1. **Pull openshift-install** - Downloads from registry cache or extracts from release
-2. **Prepare configs** - Copies install-config.yaml and agent-config.yaml
-3. **Create agent ISO** - Generated on registry server (fast), falls back to local. VM disk wipe runs in parallel.
-4. **Setup kubeconfig** - Installs to ~/.kube/config
-5. **Start all nodes** - Powers on all control and worker nodes
-6. **Launch monitor** - Starts GUI monitor (monitor.py) in background
-7. **Wait for bootstrap** - Monitors bootstrap completion
-8. **Wait for install** - Monitors full installation
-
-## Performance Optimizations
-
-### Binary Caching
-
-The `openshift-install` binary is cached at multiple levels:
-
-1. **Registry server**: `/var/lib/openshift-cache/openshift-install-<version>`
-2. **Local**: `bin/openshift-install-<version>`
-3. **Installed**: `/usr/local/bin/openshift-install`
-
-Priority: installed (if correct version) → local cache → registry cache → extract from release
-
-### Remote ISO Generation
-
-Agent ISO is generated on the registry server instead of locally:
-
-- **Old flow**: Generate locally → upload ~1GB ISO over network (slow)
-- **New flow**: Send ~10KB configs → generate on registry → local copy to Proxmox (fast)
-
-Falls back to local generation if registry cache is missing.
-
-### Base ISO Caching
-
-The base RHCOS ISO is cached during mirror:
-- Stored at `pve.gw.lo:/var/lib/vz/template/iso/rhcos-<version>-x86_64.iso`
-- Registry VM → Proxmox is local transfer (fast)
-
-## Utility Scripts
-
-| Script | Description |
-|--------|-------------|
-| `install.sh` | Main installation script |
-| `monitor.py` | GUI monitor for agent installation (auto-started) |
-| `create-vms.sh` | Create VM infrastructure |
-| `delete-vms.sh` | Delete all cluster VMs |
-| `poweroff-all.sh` | Power off all cluster VMs |
-| `poweron-all.sh` | Power on all cluster VMs |
-| `pull-from-registry.sh` | Extract openshift-install from registry |
-| `approvecsr.sh` | Auto-approve pending CSRs |
-| `watch-install.sh` | Watch cluster operator status |
-
-## File Structure
-
-```
-agentinstall/
-├── config.sh                    # Environment configuration
-├── install.sh                   # Main installation script
-├── monitor.py                   # GUI monitor for agent installation
-├── pull-from-registry.sh        # Extract installer from registry
-├── create-vms.sh                # Create VM infrastructure
-├── delete-vms.sh                # Delete VMs
-├── poweroff-all.sh              # Power off all VMs
-├── poweron-all.sh               # Power on all VMs
-├── approvecsr.sh                # CSR approval helper
-├── watch-install.sh             # Installation monitor (CLI)
-├── agent-config.yaml            # Agent configuration
-├── install-config.yaml          # Install configuration
-├── install-config.yaml.template # Template for install-config
-├── pullsecret.json              # Registry pull secrets
-├── lib/
-│   └── vm.sh                    # VM management functions
-├── bin/                         # Cached binaries (gitignored)
-│   └── openshift-install-X.Y.Z
-└── gw/                          # Generated install dir (gitignored)
-    ├── agent.x86_64.iso
-    └── auth/kubeconfig
-```
-
-## Configuration Reference
-
-### config.sh
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `LOCAL_REGISTRY` | registry.gw.lo | Registry hostname (port 443) |
-| `LOCAL_REPOSITORY` | openshift/release | Image repository path |
-| `PVE_HOST` | pve.gw.lo | Proxmox host |
-| `LVM_VG` | production-lvm | LVM volume group |
-| `LVM_STORAGE` | production-lvm | Proxmox storage ID |
-| `DEFAULT_DISK_SIZE` | 100G | VM disk size (OCP 4.18+ requires 100GB) |
-| `CONTROL_VM_IDS` | (701 702 703) | Control plane VM IDs |
-| `WORKER_VM_IDS` | (704 705 706) | Worker VM IDs |
-| `CONTROL_CORES` | 8 | Control plane CPU cores |
-| `CONTROL_MEMORY` | 17000 | Control plane memory (MB) |
-| `WORKER_CORES` | 4 | Worker CPU cores |
-| `WORKER_MEMORY` | 16000 | Worker memory (MB) |
-
-### DNS Requirements
-
-| Record | Target | Description |
-|--------|--------|-------------|
-| `api.gw.lo` | Load balancer IP | Kubernetes API |
-| `api-int.gw.lo` | Load balancer IP | Internal API |
-| `*.apps.gw.lo` | Ingress IP | Application routes |
-| `control0.gw.lo` | 192.168.1.201 | Control node 0 (rendezvous) |
-| `control1.gw.lo` | 192.168.1.202 | Control node 1 |
-| `control2.gw.lo` | 192.168.1.203 | Control node 2 |
-| `worker0.gw.lo` | 192.168.1.204 | Worker node 0 |
-| `worker1.gw.lo` | 192.168.1.205 | Worker node 1 |
-| `worker2.gw.lo` | 192.168.1.206 | Worker node 2 |
+- **`monitor.py`** — local Tkinter GUI polling the assisted-installer API on
+  the rendezvous node; started automatically by `install.sh`.
+- **agent-monitor** — the web console (`http://agentmonitor.g10.lo`); add the
+  cluster with rendezvous IP `192.168.8.201`. See
+  [agent-monitor](https://github.com/glennswest/agent-monitor).
+- `./watch-install.sh` and `./approvecsr.sh` for CLI-side watching.
 
 ## Troubleshooting
 
-### "No eligible disks" Error
+- **Release image not found** → `./mirror.sh <ver>` first.
+- **kube-apiserver crash-loop, `missing operand kubernetes version`** — the
+  ISO was built with a mismatched `openshift-install`; `install.sh` detects
+  this in the first 3 minutes and aborts. Re-pull the installer and rerun.
+- **control0 stuck fetching ignition after bootstrap** — the MachineConfig
+  bootstrap desync; `install.sh` applies `fix-mc-desync.sh` automatically, or
+  run it by hand. Details: [`MC_BOOTSTRAP_DESYNC.md`](./MC_BOOTSTRAP_DESYNC.md)
+  and [`MC_ANNOTATION_FIX.md`](./MC_ANNOTATION_FIX.md).
+- **Anything else** → `./gatherdebug.sh` collects journals, pod logs, and
+  install state from every node into a timestamped bundle.
 
-VMs need empty disks of at least 100GB (OCP 4.18+ requirement). The install script erases disks, but if it fails:
-
-```bash
-# Manually erase via Proxmox
-ssh root@pve.gw.lo "lvremove -f production-lvm/vm-701-disk-0"
-ssh root@pve.gw.lo "lvcreate --yes --wipesignatures y -L100G -n vm-701-disk-0 production-lvm"
-```
-
-### DNS Resolution Errors
-
-Check that DNS entries are correct:
-
-```bash
-dig api.gw.lo
-dig api-int.gw.lo
-dig test.apps.gw.lo
-```
-
-### Registry Connection Issues
-
-Test registry access:
-
-```bash
-curl -sk https://registry.gw.lo/v2/_catalog
-oc adm release info --insecure registry.gw.lo/openshift/release:4.18.30-x86_64
-```
-
-### Remote ISO Generation Fails
-
-If `openshift-install` isn't cached on registry, either:
-1. Re-run mirror: `./mirror.sh <version>` (from quick-quay)
-2. Install falls back to local generation automatically
-
-## Version Resolution
-
-Both `mirror.sh` and `install.sh` support partial version specification:
-
-```bash
-./mirror.sh 4.18       # Resolves to latest 4.18.x (e.g., 4.18.30)
-./mirror.sh 4.18.z     # Same as above
-./mirror.sh 4.18.10    # Uses exact version
-
-./install.sh 4.18      # Same resolution logic
-```
-
-Version resolution queries the Quay.io API to find the latest patch release for the specified major.minor version.
-
-## Install History
-
-Installation attempts are tracked in `install-history.json`:
-
-```bash
-# View history via config.sh function
-source config.sh
-show_install_history
-```
-
-Each entry records:
-- Version installed
-- Start/end timestamps
-- Completion status
-
-## Related Projects
-
-- **qpve**: Traditional (non-agent) OpenShift installation scripts
-- **quick-quay**: Quay registry setup and release mirroring ([GitHub](https://github.com/glennswest/quick-quay))
-- **pdnsloadbalancer**: PowerDNS-based load balancer for API/ingress endpoints ([GitHub](https://github.com/glennswest/pdnsloadbalancer))
+Install history for this machine is kept in `install-history.json`
+(version, start/end, duration, completed) and printed after each install.

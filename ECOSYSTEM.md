@@ -28,9 +28,9 @@ Shell-script-driven agent-based install of a 6-node cluster (`g8` /
 live in `config.sh`. Cached `openshift-install` Mac binaries for 4.18–4.21
 are kept in `bin/`.
 
-> **Note:** `README.md` predates the FastRegistry/g8 migration and still
-> describes the legacy Quay + `registry.gw.lo` + quick-quay flow. `config.sh`
-> and the scripts are the source of truth.
+Nodes PXE-boot the FastRegistry-generated agent ISO via the PXE Manager —
+no ISO is attached to the VMs. See `README.md` for the full step-by-step
+flow, configuration reference, and troubleshooting.
 
 **Usage:**
 
