@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### 2026-08-26
+- **docs:** Add PDF renders of README and ECOSYSTEM (`md2pdf.py`)
+
 ### 2026-08-25
 - **docs:** Rewrite `README.md` from the actual scripts — FastRegistry + PXE-boot flow on g8 (was stale Quay/`registry.gw.lo` ISO-attach flow); documents install.sh steps, config.sh reference, all scripts, monitoring, and troubleshooting
 
